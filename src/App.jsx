@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import GuidedBuilder from "./GuidedBuilder.jsx";
 import ProcessStudio from "./ProcessStudio.jsx";
 import ArchitectStudio from "./ArchitectStudio.jsx";
+import ProcessVideoBuilder from "./process-video-builder.jsx";
 import { 
   KeyRound, User, Lock, LogOut, ClipboardList, Shield, Info, 
   FolderHeart, Search, Trash2, Play, Save, RefreshCw, FileText, Check, Database
@@ -89,7 +90,7 @@ export default function App() {
 
   // Guardrail to prevent appuser from accessing admin-only workspace modes
   useEffect(() => {
-    if (user && user.role !== "appadmin" && (mode === "process" || mode === "architect" || mode === "history")) {
+    if (user && user.role !== "appadmin" && (mode === "process" || mode === "architect" || mode === "history" || mode === "video")) {
       setMode("build");
     }
   }, [user, mode]);
@@ -462,6 +463,7 @@ export default function App() {
   if (user.role === "appadmin") {
     visibleModes.push({ k: "process", label: "Process Studio" });
     visibleModes.push({ k: "architect", label: "Architect" });
+    visibleModes.push({ k: "video", label: "Video Builder" });
     visibleModes.push({ k: "history", label: "Login Logs" });
   }
 
@@ -482,6 +484,9 @@ export default function App() {
       </div>
       <div key="architect" style={{ display: mode === "architect" ? "flex" : "none", flexDirection: "column", height: "100%", paddingTop: 52, boxSizing: "border-box" }}>
         <ArchitectStudio onRegister={(handlers) => registerHandlers("architect", handlers)} />
+      </div>
+      <div key="video" style={{ display: mode === "video" ? "flex" : "none", flexDirection: "column", height: "100%", paddingTop: 52, boxSizing: "border-box" }}>
+        <ProcessVideoBuilder />
       </div>
 
       {/* Diagrams Dashboard View */}
@@ -775,7 +780,7 @@ export default function App() {
         })}
 
         {/* Action Button: Save Work (hide on logs & dashboard views) */}
-        {mode !== "history" && mode !== "dashboard" && (
+        {mode !== "history" && mode !== "dashboard" && mode !== "video" && (
           <button
             onClick={saveCurrentWork}
             disabled={saveStatus === "saving"}

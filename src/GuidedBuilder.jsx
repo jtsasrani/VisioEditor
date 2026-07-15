@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   Play, Plus, ChevronLeft, ChevronRight, CornerDownRight, GitBranch, Flag,
-  Download, Copy, Check, PanelLeftClose, PanelLeftOpen, Hand, Cpu, Trash2, Maximize2, Network, Hammer, Save, FilePlus2, Route, ExternalLink, FileText
+  Download, Copy, Check, PanelLeftClose, PanelLeftOpen, Hand, Cpu, Trash2, Maximize2, Network, Hammer, Save, FilePlus2, Route, ExternalLink, FileText, Link2
 } from "lucide-react";
 import mermaid from "mermaid";
 
@@ -58,11 +58,11 @@ const sans = { fontFamily: "ui-sans-serif, system-ui, -apple-system, sans-serif"
 // node-type presentation for the builder view
 const NT = {
   start:       { bg: "#efe1f5", bd: "#7030a0", fg: "#4a1d63", name: "Start" },
-  process:     { bg: "#fff7cc", bd: "#d6b656", fg: "#5a4a00", name: "Process" },
-  manual:      { bg: "#f8d7d5", bd: "#b85450", fg: "#7a2320", name: "Manual" },
-  decision:    { bg: "#d6ecf7", bd: "#0e86b8", fg: "#0a4a63", name: "Decision" },
-  information: { bg: "#e1f0f5", bd: "#3a9bbf", fg: "#0a4a5e", name: "Information" },
-  end:         { bg: "#e8e8e8", bd: "#7f7f7f", fg: "#444444", name: "End" },
+  process:     { bg: "#ffffff", bd: "#8a8a8a", fg: "#333333", name: "Process" },
+  manual:      { bg: "#d6ecf7", bd: "#0e86b8", fg: "#0a4a63", name: "Manual" },
+  decision:    { bg: "#f8d7d5", bd: "#b85450", fg: "#7a2320", name: "Decision" },
+  information: { bg: "#fff7cc", bd: "#d6b656", fg: "#5a4a00", name: "Information" },
+  end:         { bg: "#efe1f5", bd: "#7030a0", fg: "#4a1d63", name: "End" },
   step:        { bg: "#ffffff", bd: "#8a8a8a", fg: "#333333", name: "Step" },
 };
 const ADD_TYPES = ["process", "manual", "information", "decision", "end"];
@@ -139,9 +139,15 @@ function layoutFlow(g) {
 }
 const fillOf = (s) => (String(s).match(/fillColor=(#[0-9a-fA-F]{6}|none)/) || [])[1] || "#ffff00";
 function styleFor(type) {
-  if (type === "information") return "rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#3a9bbf;fontSize=13;";
-  if (type === "end") return (PROFILE.start?.style || "").replace(/fillColor=#[0-9a-fA-F]{6}/, "fillColor=#7f7f7f");
-  return (PROFILE[type] && PROFILE[type].style) || PROFILE.process.style;
+  switch (type) {
+    case "information": return PROFILE.process.style;                 // yellow box
+    case "process":     return (PROFILE.step && PROFILE.step.style) || PROFILE.process.style; // white box
+    case "manual":      return PROFILE.decision.style;                // blue diamond
+    case "decision":    return PROFILE.manual.style;                  // red diamond
+    case "start":       return PROFILE.start.style;                   // purple
+    case "end":         return PROFILE.start.style;                   // purple
+    default:            return (PROFILE.step && PROFILE.step.style) || PROFILE.process.style;
+  }
 }
 const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const wrapLabel = (t) => esc(`<div style="font-size: 1px"><font style="font-size:15.52px;font-family:Arial;color:#000000;line-height:120%">${t}</font></div>`);
@@ -176,6 +182,7 @@ function wrapSvg(text, max) {
 // whole-flow flowchart (all branches) — the "expand" view; click a node to select it
 function FullFlowSvg({ graph, cursor, onSelect, onEdgeInsert }) {
   const g = React.useMemo(() => layoutFlow(JSON.parse(JSON.stringify(graph))), [graph]);
+  const shared = React.useMemo(() => { const s = new Set(); graph.nodes.forEach((n) => { if (n.refId) { s.add(n.refId); s.add(n.id); } }); return s; }, [graph]);
   const byId = Object.fromEntries(g.nodes.map((n) => [n.id, n]));
   const dim = (t) => (t === "decision" || t === "manual" ? [158, 92] : t === "start" || t === "end" ? [150, 46] : [188, 56]);
   const W = Math.max(0, ...g.nodes.map((n) => n.x)) + 260;
@@ -214,6 +221,7 @@ function FullFlowSvg({ graph, cursor, onSelect, onEdgeInsert }) {
               {wrapSvg(n.label, diamond ? 15 : 24).map((ln, i, a) => <tspan key={i} x={cx} dy={i === 0 ? -(a.length - 1) * 6 : 12}>{ln}</tspan>)}
             </text>
             {n.seq != null && <text x={n.x + 5} y={n.y + 11} fontSize="9" fontWeight="700" fill={c} style={mono}>{n.seq}</text>}
+            {shared.has(n.id) && <text x={n.x + w - 7} y={n.y + 12} textAnchor="end" fontSize="10" fill={c} style={sans}>🔗</text>}
           </g>
         );
       })}
@@ -370,7 +378,7 @@ function enumeratePaths(graph, cap = 500) {
   return { paths, truncated };
 }
 
-function PathsPanel({ laid, result, busy, selected, onSelect, query, onQuery, edits, setEdits, hasEdits, onApply, onRenameBranch, onInsert, onAppend }) {
+function PathsPanel({ laid, result, busy, selected, onSelect, query, onQuery, edits, setEdits, hasEdits, onApply, onRenameBranch, onInsert, onAppend, onRemove }) {
   const [focusId, setFocusId] = React.useState(null);
   if (busy) return (
     <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", background: T.paper, color: T.textDim }}>
@@ -473,6 +481,13 @@ function PathsPanel({ laid, result, busy, selected, onSelect, query, onQuery, ed
                           style={{ ...mono, fontSize: 10.5, color: tag, background: "#fff", border: `1px solid ${dirty && e.type != null ? T.amber : T.line}`, borderRadius: 6, padding: "2px 4px", cursor: "pointer", textTransform: "uppercase" }}>
                           {PROC_TYPES.map((t) => <option key={t} value={t}>{(NT[t] && NT[t].name) || t}</option>)}
                         </select>
+                        <div style={{ flex: 1 }} />
+                        {onRemove && n.type !== "start" && (
+                          <button onClick={() => onRemove(id)} title="Remove this step (reconnects the flow)"
+                            style={{ display: "inline-flex", alignItems: "center", background: "transparent", border: "none", color: "#b85450", cursor: "pointer", padding: 2 }}>
+                            <Trash2 size={13} />
+                          </button>
+                        )}
                       </div>
                       <textarea value={val} onFocus={() => setFocusId(id)} onBlur={() => setTimeout(() => setFocusId((f) => (f === id ? null : f)), 150)}
                         onChange={(ev) => setLabel(id, ev.target.value)} rows={Math.min(6, Math.max(1, Math.ceil(val.length / 70)))}
@@ -630,11 +645,31 @@ export default function GuidedBuilder({ onRegister }) {
   const cur = byId[cursor];
   // numbered layout (for paths seq + byId) and template-styled xml (for the draw.io view)
   const laidForPaths = useMemo(() => { const g = layoutFlow(JSON.parse(JSON.stringify(graph))); g.byId = Object.fromEntries(g.nodes.map((n) => [n.id, n])); return g; }, [graph]);
+  // shared info blocks: masters that have linked instances, plus the instances themselves
+  const sharedIds = useMemo(() => { const s = new Set(); graph.nodes.forEach((n) => { if (n.refId) { s.add(n.refId); s.add(n.id); } }); return s; }, [graph]);
+  const infoMasters = useMemo(() => graph.nodes.filter((n) => n.type === "information" && !n.refId), [graph]);
   const xml = useMemo(() => toDrawio(graph), [graph]);
   const applyEdits = () => {
     if (!Object.keys(edits).length) return;
     setGraph((g) => ({ ...g, nodes: g.nodes.map((n) => { const e = edits[n.id]; return e ? { ...n, label: e.label != null ? e.label : n.label, type: e.type != null ? e.type : n.type } : n; }) }));
     setEdits({}); setSelPath(null);
+  };
+  // remove a step from the Paths tab — bridges parent(s) to child(ren) so the flow stays connected
+  const pathRemove = (nodeId) => {
+    if (nodeId === "start") return;
+    setGraph((g) => {
+      let nodes = g.nodes.map((n) => { const e = edits[n.id]; return e ? { ...n, label: e.label != null ? e.label : n.label, type: e.type != null ? e.type : n.type } : n; });
+      const incoming = g.edges.filter((e) => e.to === nodeId);
+      const outgoing = g.edges.filter((e) => e.from === nodeId);
+      const bridges = [];
+      for (const inE of incoming) for (const outE of outgoing) {
+        if (inE.from !== outE.to && !g.edges.some((e) => e.from === inE.from && e.to === outE.to) && !bridges.some((b) => b.from === inE.from && b.to === outE.to))
+          bridges.push({ from: inE.from, to: outE.to, label: inE.label || "" });
+      }
+      nodes = nodes.filter((n) => n.id !== nodeId);
+      return { ...g, nodes, edges: [...g.edges.filter((e) => e.from !== nodeId && e.to !== nodeId), ...bridges] };
+    });
+    setEdits({});
   };
   // switch views, flushing any pending Paths edits into the graph so Build/Paths stay in sync
   const changeView = (k) => { if (view === "paths" && Object.keys(edits).length) applyEdits(); setView(k); };
@@ -687,7 +722,25 @@ export default function GuidedBuilder({ onRegister }) {
   };
   const branchChild = (decId, b) => { const e = childEdges(graph, decId).find((x) => x.label === b); return e ? e.to : null; };
   const goBranch = (b) => { const c = branchChild(cursor, b); if (c) { setCursor(c); setPendingBranch(null); } else setPendingBranch(b); };
-  const updateLabel = (id, label) => { setGraph((g) => ({ ...g, nodes: g.nodes.map((n) => (n.id === id ? { ...n, label } : n)) })); if (id === "start") setFlowName(label); };
+  const updateLabel = (id, label) => {
+    setGraph((g) => {
+      const node = g.nodes.find((n) => n.id === id);
+      // shared info block: edit the master and every linked instance together
+      if (node && (node.refId || g.nodes.some((n) => n.refId === id))) {
+        const masterId = node.refId || id;
+        return { ...g, nodes: g.nodes.map((n) => (n.id === masterId || n.refId === masterId ? { ...n, label } : n)) };
+      }
+      return { ...g, nodes: g.nodes.map((n) => (n.id === id ? { ...n, label } : n)) };
+    });
+    if (id === "start") setFlowName(label);
+  };
+  // link a new instance of an existing info block at the cursor (shares content, own onward path)
+  const addReference = (masterId) => {
+    const master = graph.nodes.find((n) => n.id === masterId); if (!master) return;
+    const id = uid();
+    setGraph((g) => ({ ...g, nodes: [...g.nodes, { id, type: "information", label: master.label, refId: masterId }], edges: [...g.edges, { from: cursor, to: id, label: pendingBranch || "" }] }));
+    setCursor(id); setPendingBranch(null); setNewLabel("");
+  };
   const updateType = (id, type) => setGraph((g) => ({ ...g, nodes: g.nodes.map((n) => (n.id === id ? { ...n, type, ...(type === "decision" && !n.branches ? { branches: ["Yes", "No"] } : {}) } : n)) }));
   const addBranch = (decId, label) => { const b = label.trim(); if (!b) return; setGraph((g) => ({ ...g, nodes: g.nodes.map((n) => (n.id === decId && !(n.branches || []).includes(b) ? { ...n, branches: [...(n.branches || []), b] } : n)) })); };
   // rename a branch condition — keeps the decision's branch list and its edge labels in sync
@@ -869,7 +922,7 @@ export default function GuidedBuilder({ onRegister }) {
           <div style={{ flex: 1, position: "relative" }}>
             <PathsPanel laid={laidForPaths} result={pathResult} busy={pathsBusy}
               selected={selPath} onSelect={setSelPath} query={pathQuery} onQuery={setPathQuery}
-              edits={edits} setEdits={setEdits} hasEdits={Object.keys(edits).length > 0} onApply={applyEdits} onRenameBranch={renameBranch} onInsert={pathInsert} onAppend={pathAppend} />
+              edits={edits} setEdits={setEdits} hasEdits={Object.keys(edits).length > 0} onApply={applyEdits} onRenameBranch={renameBranch} onInsert={pathInsert} onAppend={pathAppend} onRemove={pathRemove} />
           </div>
         )}
         {view === "mermaid" && (
@@ -1076,6 +1129,18 @@ export default function GuidedBuilder({ onRegister }) {
                   {newType === "decision" && (
                     <input value={newBranches} onChange={(e) => setNewBranches(e.target.value)} spellCheck={false} placeholder="Branches, comma-separated"
                       style={{ ...sans, width: "100%", boxSizing: "border-box", marginTop: 8, fontSize: 12, color: T.inkSoft, background: "#fff", border: `1px solid ${T.line}`, borderRadius: 8, padding: "7px 10px", outline: "none" }} />
+                  )}
+                  {newType === "information" && infoMasters.length > 0 && (
+                    <div style={{ marginTop: 8, background: "#eef7fb", border: "1px solid #bfe0ee", borderRadius: 8, padding: "8px 10px" }}>
+                      <div style={{ ...mono, fontSize: 10, color: "#3a7d99", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>Or reuse a shared info block</div>
+                      {infoMasters.map((m) => (
+                        <button key={m.id} onClick={() => addReference(m.id)} title="Link a shared instance of this info block"
+                          style={{ ...sans, display: "flex", alignItems: "center", gap: 6, width: "100%", textAlign: "left", cursor: "pointer", background: "#fff", border: `1px solid ${T.line}`, borderRadius: 6, padding: "6px 8px", marginBottom: 5, fontSize: 12, color: "#0a4a5e" }}>
+                          <Link2 size={12} /> {trunc(m.label, 42)}
+                        </button>
+                      ))}
+                      <div style={{ ...mono, fontSize: 10, color: "#3a7d99", marginTop: 2 }}>linked instances share content; each keeps its own onward path</div>
+                    </div>
                   )}
                   {newLabel.trim() && (() => {
                     const nd = similarSteps(newLabel, graph.nodes, null);
