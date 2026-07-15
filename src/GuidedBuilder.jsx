@@ -122,6 +122,7 @@ function layoutFlow(g) {
   g.edges.forEach((e) => kids[e.from] && kids[e.from].push(e.to));
   const byId = Object.fromEntries(g.nodes.map((n) => [n.id, n]));
   const start = g.nodes.find((n) => n.type === "start") || g.nodes[0];
+  if (!start) return g;
   let leaf = 0;
   const place = (id, depth, seen) => {
     if (!byId[id] || seen.has(id)) return; seen.add(id);
