@@ -87,6 +87,13 @@ export default function App() {
     }
   }, [user]);
 
+  // Guardrail to prevent appuser from accessing admin-only workspace modes
+  useEffect(() => {
+    if (user && user.role !== "appadmin" && (mode === "process" || mode === "architect" || mode === "history")) {
+      setMode("build");
+    }
+  }, [user, mode]);
+
   // Fetch Diagrams list from backend
   const fetchDiagrams = async () => {
     if (!user) return;
@@ -260,7 +267,12 @@ export default function App() {
       if (!res.ok) throw new Error("Could not load diagram details.");
       const data = await res.json();
 
-      // Update workspace mode first
+      // Update workspace mode first if role allows it
+      if (user.role !== "appadmin" && (data.type === "process" || data.type === "architect")) {
+        alert("Access Denied: You do not have permission to access Process Studio or Architect workspaces.");
+        setDiagLoading(false);
+        return;
+      }
       setMode(data.type);
 
       // Need to wait slightly for components to register handlers if swapping modes
@@ -445,9 +457,11 @@ export default function App() {
   // Active Modes List including Login History and Diagrams Dashboard
   const visibleModes = [
     { k: "dashboard", label: "My Diagrams" },
-    ...MODES
+    { k: "build", label: "Builder" }
   ];
   if (user.role === "appadmin") {
+    visibleModes.push({ k: "process", label: "Process Studio" });
+    visibleModes.push({ k: "architect", label: "Architect" });
     visibleModes.push({ k: "history", label: "Login Logs" });
   }
 

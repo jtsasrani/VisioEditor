@@ -239,13 +239,23 @@ const server = http.createServer(async (req, res) => {
           ".ico": "image/x-icon"
         };
         const contentType = mimeTypes[ext] || "application/octet-stream";
-        res.writeHead(200, { "Content-Type": contentType });
+        const headers = { "Content-Type": contentType };
+        if (relPath === "index.html") {
+          headers["Cache-Control"] = "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0";
+          headers["Pragma"] = "no-cache";
+          headers["Expires"] = "0";
+        }
+        res.writeHead(200, headers);
         fs.createReadStream(filePath).pipe(res);
       } else {
         // Fallback to index.html for React SPA Router support
         const indexHtml = path.join(__dirname, "dist", "index.html");
         if (fs.existsSync(indexHtml)) {
-          res.writeHead(200, { "Content-Type": "text/html" });
+          const headers = { "Content-Type": "text/html" };
+          headers["Cache-Control"] = "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0";
+          headers["Pragma"] = "no-cache";
+          headers["Expires"] = "0";
+          res.writeHead(200, headers);
           fs.createReadStream(indexHtml).pipe(res);
         } else {
           res.writeHead(404, { "Content-Type": "text/plain" });
