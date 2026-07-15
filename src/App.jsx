@@ -460,19 +460,19 @@ export default function App() {
   return (
     <div style={{ height: "100vh", position: "relative", fontFamily: "ui-sans-serif, system-ui, -apple-system, sans-serif" }}>
       {/* Workspace Pages */}
-      <div key="build" style={{ display: mode === "build" ? "block" : "none", height: "100%" }}>
+      <div key="build" style={{ display: mode === "build" ? "flex" : "none", flexDirection: "column", height: "100%", paddingTop: 52, boxSizing: "border-box" }}>
         <GuidedBuilder onRegister={(handlers) => registerHandlers("build", handlers)} />
       </div>
-      <div key="process" style={{ display: mode === "process" ? "block" : "none", height: "100%" }}>
+      <div key="process" style={{ display: mode === "process" ? "flex" : "none", flexDirection: "column", height: "100%", paddingTop: 52, boxSizing: "border-box" }}>
         <ProcessStudio onRegister={(handlers) => registerHandlers("process", handlers)} />
       </div>
-      <div key="architect" style={{ display: mode === "architect" ? "block" : "none", height: "100%" }}>
+      <div key="architect" style={{ display: mode === "architect" ? "flex" : "none", flexDirection: "column", height: "100%", paddingTop: 52, boxSizing: "border-box" }}>
         <ArchitectStudio onRegister={(handlers) => registerHandlers("architect", handlers)} />
       </div>
 
       {/* Diagrams Dashboard View */}
       {mode === "dashboard" && (
-        <div key="dashboard" style={{ height: "100%", background: T.paper, overflowY: "auto", padding: "80px 24px 40px" }}>
+        <div key="dashboard" style={{ height: "100%", background: T.paper, overflowY: "auto", padding: "60px 24px 40px" }}>
           <div style={{ maxWidth: 960, margin: "0 auto", background: "#FFFFFF", border: "1px solid #E6E1D6", borderRadius: 12, padding: "24px 30px" }}>
             <div style={{ display: "flex", alignItems: "center", borderBottom: "1px solid #E6E1D6", paddingBottom: 16, marginBottom: 20, gap: 12 }}>
               <FolderHeart size={24} color={T.amber} />
@@ -642,7 +642,7 @@ export default function App() {
 
       {/* Admin Login logs View */}
       {user.role === "appadmin" && mode === "history" && (
-        <div key="history" style={{ display: "block", height: "100%", background: T.paper, overflowY: "auto", padding: "80px 24px 40px" }}>
+        <div key="history" style={{ display: "block", height: "100%", background: T.paper, overflowY: "auto", padding: "60px 24px 40px" }}>
           <div style={{ maxWidth: 800, margin: "0 auto", background: "#FFFFFF", border: "1px solid #E6E1D6", borderRadius: 12, padding: "24px 30px" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, borderBottom: "1px solid #E6E1D6", paddingBottom: 16, marginBottom: 20 }}>
               <ClipboardList size={22} color={T.amber} />

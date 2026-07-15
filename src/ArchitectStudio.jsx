@@ -958,7 +958,7 @@ export default function ArchitectStudio({ onRegister }) {
   const done = stageRank(stage);
 
   return (
-    <div style={{ ...sans, display: "flex", flexDirection: "column", height: "100vh",
+    <div style={{ ...sans, display: "flex", flexDirection: "column", height: "100%",
       background: T.paper, color: T.ink }}>
       {/* ---- Top bar : title + pipeline rail (the signature) ---- */}
       <header style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap",

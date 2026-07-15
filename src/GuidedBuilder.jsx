@@ -755,7 +755,7 @@ export default function GuidedBuilder({ onRegister }) {
   const isEndCursor = cur && cur.type === "end";
 
   return (
-    <div style={{ ...sans, display: "flex", height: "100vh", background: T.paper, color: T.ink }}>
+    <div style={{ ...sans, display: "flex", height: "100%", background: T.paper, color: T.ink }}>
       {/* collapsible panel */}
       {collapsed ? (
         <div style={{ width: 44, background: T.rail, display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 14, borderRight: `1px solid ${T.railLine}` }}>

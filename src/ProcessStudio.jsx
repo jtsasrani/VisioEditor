@@ -662,7 +662,7 @@ export default function ProcessStudio({ onRegister }) {
   ];
 
   return (
-    <div style={{ ...sans, display: "flex", flexDirection: "column", height: "100vh", background: T.paper, color: T.ink }}>
+    <div style={{ ...sans, display: "flex", flexDirection: "column", height: "100%", background: T.paper, color: T.ink }}>
       <header style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 18px", background: T.rail, color: T.inv, borderBottom: `1px solid ${T.railLine}` }}>
         <Workflow size={18} color={T.amber} />
         <span style={{ fontWeight: 650, fontSize: 15 }}>Process Studio</span>
