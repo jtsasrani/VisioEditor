@@ -262,11 +262,20 @@ export default function App() {
     setDiagLoading(true);
     try {
       const base = getBaseUrl();
-      const res = await fetch(
-        `${base}api/flows/get?username=${diag.username}&id=${diag.id}&t=${Date.now()}`
-      );
+      const url = `${base}api/flows/get?username=${diag.username}&id=${diag.id}&t=${Date.now()}`;
+      console.log("[App] Fetching diagram from URL:", url);
+      
+      const res = await fetch(url);
+      console.log("[App] Fetch response status:", res.status);
+      
+      // Log headers to see cache status
+      res.headers.forEach((val, key) => {
+        console.log(`[App] Header - ${key}: ${val}`);
+      });
+
       if (!res.ok) throw new Error("Could not load diagram details.");
       const data = await res.json();
+      console.log("[App] loadDiagram fetched data:", data);
 
       // Update workspace mode first if role allows it
       if (user.role !== "appadmin" && (data.type === "process" || data.type === "architect")) {
