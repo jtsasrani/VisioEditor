@@ -821,7 +821,7 @@ const stageRank = (k) => STAGES.findIndex((s) => s.key === k);
 /* ------------------------------------------------------------------ *
  *  App
  * ------------------------------------------------------------------ */
-export default function ArchitectStudio() {
+export default function ArchitectStudio({ onRegister }) {
   const [prompt, setPrompt] = useState(
     "A networked caseworker service inside a VPC: CloudFront fronts a load balancer in " +
     "the public subnet, which calls an orchestrator Lambda in the private subnet; the " +
@@ -848,6 +848,37 @@ export default function ArchitectStudio() {
   const [endpoint, setEndpoint] = useState("/diagram/api/extract");
   const [drawioUrl, setDrawioUrl] = useState("https://embed.diagrams.net/");
   const [useDrawio, setUseDrawio] = useState(false);
+
+  const stateRef = useRef();
+  stateRef.current = { prompt, graph, laid, xml, view, history, doc, stage };
+
+  useEffect(() => {
+    if (onRegister) {
+      onRegister({
+        getSaveData: () => ({
+          title: stateRef.current.graph ? (stateRef.current.graph.title || "Cloud Architecture") : "Cloud Architecture",
+          prompt: stateRef.current.prompt,
+          graph: stateRef.current.graph,
+          laid: stateRef.current.laid,
+          xml: stateRef.current.xml,
+          view: stateRef.current.view,
+          history: stateRef.current.history,
+          doc: stateRef.current.doc,
+          stage: stateRef.current.stage,
+        }),
+        loadData: (data) => {
+          if (data.prompt) setPrompt(data.prompt);
+          if (data.graph) setGraph(data.graph);
+          if (data.laid) setLaid(data.laid);
+          if (data.xml) setXml(data.xml);
+          if (data.view) setView(data.view);
+          if (data.history) setHistory(data.history);
+          if (data.doc) setDoc(data.doc);
+          if (data.stage) setStage(data.stage);
+        }
+      });
+    }
+  }, [onRegister]);
 
   const run = useCallback(async () => {
     setBusy(true); setError(null); setEdited(false); setStage("prompt"); setHistory([]); setDoc("");

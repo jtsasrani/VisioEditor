@@ -1,3 +1,14 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-export default defineConfig({ plugins: [react()], base: "/diagram/" });
+export default defineConfig({
+  plugins: [react()],
+  base: "/diagram/",
+  server: {
+    proxy: {
+      "/diagram/api": {
+        target: "http://localhost:3001",
+        changeOrigin: true,
+      }
+    }
+  }
+});

@@ -1,8 +1,41 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   Play, Plus, ChevronLeft, ChevronRight, CornerDownRight, GitBranch, Flag,
-  Download, Copy, Check, PanelLeftClose, PanelLeftOpen, Hand, Cpu, Trash2, Maximize2, Network, Hammer, Save, FilePlus2, Route, ExternalLink,
+  Download, Copy, Check, PanelLeftClose, PanelLeftOpen, Hand, Cpu, Trash2, Maximize2, Network, Hammer, Save, FilePlus2, Route, ExternalLink, FileText
 } from "lucide-react";
+import mermaid from "mermaid";
+
+mermaid.initialize({
+  startOnLoad: false,
+  theme: "default",
+  securityLevel: "loose",
+  flowchart: { useMaxWidth: true, htmlLabels: true }
+});
+
+function MermaidView({ chart }) {
+  const ref = useRef();
+
+  useEffect(() => {
+    if (ref.current) {
+      ref.current.innerHTML = chart;
+      ref.current.removeAttribute("data-processed");
+      try {
+        mermaid.run({
+          nodes: [ref.current]
+        });
+      } catch (err) {
+        // Suppress and log syntax errors gracefully during editing
+        console.warn("Mermaid parsing error:", err);
+      }
+    }
+  }, [chart]);
+
+  return (
+    <div style={{ width: "100%", height: "100%", overflow: "auto", padding: "40px 20px", background: "#fff", boxSizing: "border-box", display: "flex", justifyContent: "center" }}>
+      <div ref={ref} className="mermaid" style={{ width: "100%", maxWidth: "800px" }} />
+    </div>
+  );
+}
 import PROFILE from "./template-profile.json";
 
 /* ------------------------------------------------------------------ *
@@ -535,7 +568,7 @@ function DrawioFrame({ url, xml, onChange }) {
 }
 
 /* ================================================================== */
-export default function GuidedBuilder() {
+export default function GuidedBuilder({ onRegister }) {
   const [flowName, setFlowName] = useState("Change of Address");
   const [graph, setGraph] = useState(() => ({ title: "Change of Address", nodes: [{ id: "start", label: "Change of Address", type: "start" }], edges: [] }));
   const [cursor, setCursor] = useState("start");
@@ -554,6 +587,42 @@ export default function GuidedBuilder() {
   const [pathQuery, setPathQuery] = useState("");
   const [edits, setEdits] = useState({});
   const [drawioUrl, setDrawioUrl] = useState("https://embed.diagrams.net/");
+
+  const stateRef = useRef();
+  stateRef.current = { flowName, graph, cursor, pendingBranch, newType, newLabel, newBranches, newBranchName, view, fullFlow };
+
+  useEffect(() => {
+    if (onRegister) {
+      onRegister({
+        getSaveData: () => ({
+          title: stateRef.current.flowName,
+          graph: stateRef.current.graph,
+          cursor: stateRef.current.cursor,
+          pendingBranch: stateRef.current.pendingBranch,
+          newType: stateRef.current.newType,
+          newLabel: stateRef.current.newLabel,
+          newBranches: stateRef.current.newBranches,
+          newBranchName: stateRef.current.newBranchName,
+          view: stateRef.current.view,
+          fullFlow: stateRef.current.fullFlow,
+        }),
+        loadData: (data) => {
+          if (data.title) setFlowName(data.title);
+          if (data.graph) setGraph(data.graph);
+          if (data.cursor) setCursor(data.cursor);
+          if (data.pendingBranch !== undefined) setPendingBranch(data.pendingBranch);
+          if (data.newType) setNewType(data.newType);
+          if (data.newLabel) setNewLabel(data.newLabel);
+          if (data.newBranches) setNewBranches(data.newBranches);
+          if (data.newBranchName) setNewBranchName(data.newBranchName);
+          if (data.view) setView(data.view);
+          if (data.fullFlow !== undefined) setFullFlow(data.fullFlow);
+          setEdits({});
+          setSelPath(null);
+        }
+      });
+    }
+  }, [onRegister]);
 
   const byId = useMemo(() => Object.fromEntries(graph.nodes.map((n) => [n.id, n])), [graph]);
   const chain = useMemo(() => pathTo(graph, cursor), [graph, cursor]);
@@ -771,7 +840,7 @@ export default function GuidedBuilder() {
       <section style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         {/* view toggle */}
         <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderBottom: `1px solid ${T.line}`, background: T.panel }}>
-          {[["build", "Build", Hammer], ["mindmap", "Mind map", Network], ["paths", "Paths", Route], ["drawio", "Draw.io", ExternalLink]].map(([k, label, Icon]) => {
+          {[["build", "Build", Hammer], ["mindmap", "Mind map", Network], ["paths", "Paths", Route], ["mermaid", "Mermaid", FileText], ["drawio", "Draw.io", ExternalLink]].map(([k, label, Icon]) => {
             const on = view === k;
             return (
               <button key={k} onClick={() => changeView(k)}
@@ -801,6 +870,11 @@ export default function GuidedBuilder() {
             <PathsPanel laid={laidForPaths} result={pathResult} busy={pathsBusy}
               selected={selPath} onSelect={setSelPath} query={pathQuery} onQuery={setPathQuery}
               edits={edits} setEdits={setEdits} hasEdits={Object.keys(edits).length > 0} onApply={applyEdits} onRenameBranch={renameBranch} onInsert={pathInsert} onAppend={pathAppend} />
+          </div>
+        )}
+        {view === "mermaid" && (
+          <div style={{ flex: 1, position: "relative" }}>
+            <MermaidView chart={toMermaid(graph)} />
           </div>
         )}
         {view === "drawio" && (

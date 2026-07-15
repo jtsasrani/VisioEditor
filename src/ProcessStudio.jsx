@@ -539,7 +539,7 @@ function mockProcess() {
 }
 
 /* ================================================================== */
-export default function ProcessStudio() {
+export default function ProcessStudio({ onRegister }) {
   const [prompt, setPrompt] = useState(
     "A change-of-income process: an inbound call comes in, the caseworker selects the channel, " +
     "manually verifies identity, selects the NRP and views last assessed income. If RTI is present, " +
@@ -565,6 +565,36 @@ export default function ProcessStudio() {
   const [endpoint, setEndpoint] = useState("/diagram/api/process");
   const [drawioUrl, setDrawioUrl] = useState("https://embed.diagrams.net/");
   const fileRef = useRef(null);
+
+  const stateRef = useRef();
+  stateRef.current = { prompt, graph, laid, xml, view, history };
+
+  useEffect(() => {
+    if (onRegister) {
+      onRegister({
+        getSaveData: () => ({
+          title: stateRef.current.graph ? (stateRef.current.graph.title || "Scenario Flow") : "Scenario Flow",
+          prompt: stateRef.current.prompt,
+          graph: stateRef.current.graph,
+          laid: stateRef.current.laid,
+          xml: stateRef.current.xml,
+          view: stateRef.current.view,
+          history: stateRef.current.history,
+        }),
+        loadData: (data) => {
+          if (data.prompt) setPrompt(data.prompt);
+          if (data.graph) setGraph(data.graph);
+          if (data.laid) setLaid(data.laid);
+          if (data.xml) setXml(data.xml);
+          if (data.view) setView(data.view);
+          if (data.history) setHistory(data.history);
+          setEdits({});
+          setSelPath(null);
+          setPathResult(null);
+        }
+      });
+    }
+  }, [onRegister]);
 
   const render = useCallback((g) => {
     const l = layoutProcess(g); setGraph(g); setLaid(l); setXml(toDrawio(l));
