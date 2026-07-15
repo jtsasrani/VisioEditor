@@ -62,6 +62,7 @@ export default function App() {
   const [activeDiagId, setActiveDiagId] = useState(null);
   const [activeDiagName, setActiveDiagName] = useState("");
   const [activeDiagOwner, setActiveDiagOwner] = useState(null);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   // Diagrams dashboard state
   const [diagrams, setDiagrams] = useState([]);
@@ -473,12 +474,71 @@ export default function App() {
         boxShadow: "0 2px 8px rgba(0,0,0,.25)",
         zIndex: 100
       }}>
-        {/* User Badge */}
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, color: "#8B97B6", marginRight: "auto" }}>
-          <User size={12} color="#D97706" />
-          <span style={{ fontWeight: 700, color: "#EAEEF8" }}>{user.username}</span>
-          <span style={{ fontSize: 10, color: "#8B97B6", background: "rgba(255,255,255,.08)", padding: "1px 6px", borderRadius: 4 }}>{user.role}</span>
-        </span>
+        {/* User Badge & Menu Switcher */}
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginRight: "auto" }}>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, color: "#8B97B6" }}>
+            <User size={12} color="#D97706" />
+            <span style={{ fontWeight: 700, color: "#EAEEF8" }}>{user.username}</span>
+          </span>
+
+          {/* Collapsible Dropdown Switcher */}
+          <div style={{ position: "relative" }}>
+            <button
+              onClick={() => setMenuOpen(!menuOpen)}
+              style={{
+                display: "inline-flex", alignItems: "center", gap: 6,
+                fontSize: 11.5, fontWeight: 700, color: "#EAEEF8",
+                background: "rgba(255,255,255,.08)", border: "1px solid #27324E",
+                borderRadius: 7, padding: "4px 10px", cursor: "pointer",
+                transition: "background 0.2s"
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,.14)")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "rgba(255,255,255,.08)")}
+            >
+              <FolderHeart size={13} color="#D97706" />
+              <span>{visibleModes.find((m) => m.k === mode)?.label || "Menu"}</span>
+              <span style={{ fontSize: 9, opacity: 0.7 }}>▼</span>
+            </button>
+
+            {menuOpen && (
+              <>
+                {/* Click outside backdrop overlay */}
+                <div 
+                  onClick={() => setMenuOpen(false)}
+                  style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, zIndex: 9999 }}
+                />
+                <div style={{
+                  position: "absolute", top: 30, left: 0, zIndex: 10000,
+                  background: "#0F1830", border: "1px solid #27324E", borderRadius: 8,
+                  padding: 4, width: 160, boxShadow: "0 8px 24px rgba(0,0,0,.5)",
+                  display: "flex", flexDirection: "column", gap: 2
+                }}>
+                  {visibleModes.map((m) => {
+                    const active = mode === m.k;
+                    return (
+                      <button
+                        key={m.k}
+                        onClick={() => { setMode(m.k); setMenuOpen(false); }}
+                        style={{
+                          display: "block", width: "100%", textAlign: "left",
+                          fontSize: 12, fontWeight: active ? 700 : 500,
+                          color: active ? "#D97706" : "#EAEEF8",
+                          background: active ? "rgba(217,119,6,.1)" : "transparent",
+                          border: "none", borderRadius: 6, padding: "6px 10px",
+                          cursor: "pointer", transition: "background 0.15s"
+                        }}
+                        onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = "rgba(255,255,255,.05)"; }}
+                        onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = "transparent"; }}
+                      >
+                        {m.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
 
         {/* Save Work — hidden on dashboard/history */}
         {mode !== "history" && mode !== "dashboard" && (
