@@ -458,21 +458,96 @@ export default function App() {
   );
 
   return (
-    <div style={{ height: "100vh", position: "relative", fontFamily: "ui-sans-serif, system-ui, -apple-system, sans-serif" }}>
-      {/* Workspace Pages */}
-      <div key="build" style={{ display: mode === "build" ? "flex" : "none", flexDirection: "column", height: "100%", paddingTop: 52, boxSizing: "border-box" }}>
+    <div style={{ height: "100vh", display: "flex", flexDirection: "column", fontFamily: "ui-sans-serif, system-ui, -apple-system, sans-serif" }}>
+
+      {/* ── Slim Top Bar (in-flow, no overlap) ── */}
+      <div style={{
+        flexShrink: 0,
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "0 16px",
+        height: 44,
+        background: "rgba(15,24,48,.97)",
+        borderBottom: "1px solid #27324E",
+        boxShadow: "0 2px 8px rgba(0,0,0,.25)",
+        zIndex: 100
+      }}>
+        {/* User Badge */}
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, color: "#8B97B6", marginRight: "auto" }}>
+          <User size={12} color="#D97706" />
+          <span style={{ fontWeight: 700, color: "#EAEEF8" }}>{user.username}</span>
+          <span style={{ fontSize: 10, color: "#8B97B6", background: "rgba(255,255,255,.08)", padding: "1px 6px", borderRadius: 4 }}>{user.role}</span>
+        </span>
+
+        {/* Save Work — hidden on dashboard/history */}
+        {mode !== "history" && mode !== "dashboard" && (
+          <button
+            onClick={saveCurrentWork}
+            disabled={saveStatus === "saving"}
+            style={{
+              display: "inline-flex", alignItems: "center", gap: 5,
+              fontSize: 12, fontWeight: 700, color: "#fff",
+              background: saveStatus === "success" ? "#1e7e34" : saveStatus === "error" ? "#b85450" : "#0E7C7B",
+              border: "none", borderRadius: 7, padding: "5px 13px",
+              cursor: saveStatus === "saving" ? "default" : "pointer",
+              transition: "background 0.2s"
+            }}
+          >
+            {saveStatus === "saving" ? <RefreshCw size={12} className="ps-spin" /> : saveStatus === "success" ? <Check size={12} /> : <Save size={12} />}
+            {saveStatus === "saving" ? "Saving" : saveStatus === "success" ? "Saved!" : saveStatus === "error" ? "Failed" : activeDiagName ? `Save: ${activeDiagName}` : "Save Work"}
+          </button>
+        )}
+
+        {/* Login Logs — admin only */}
+        {user.role === "appadmin" && (
+          <button
+            onClick={() => setMode(mode === "history" ? "build" : "history")}
+            style={{
+              display: "inline-flex", alignItems: "center", gap: 5,
+              fontSize: 12, fontWeight: mode === "history" ? 700 : 500,
+              color: mode === "history" ? "#1a1206" : "#8B97B6",
+              background: mode === "history" ? "#D97706" : "transparent",
+              border: "1px solid #27324E", borderRadius: 7, padding: "4px 12px",
+              cursor: "pointer"
+            }}
+          >
+            <ClipboardList size={12} />
+            Login Logs
+          </button>
+        )}
+
+        {/* Logout */}
+        <button
+          onClick={handleLogout}
+          title="Sign Out"
+          style={{
+            display: "inline-flex", alignItems: "center", justifyContent: "center",
+            width: 28, height: 28, borderRadius: 6,
+            background: "transparent", border: "none",
+            color: "#8B97B6", cursor: "pointer", transition: "color 0.2s"
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.color = "#ff8b80")}
+          onMouseLeave={(e) => (e.currentTarget.style.color = "#8B97B6")}
+        >
+          <LogOut size={14} />
+        </button>
+      </div>
+
+      {/* Workspace Pages — flex:1 so they fill remaining height */}
+      <div key="build" style={{ display: mode === "build" ? "flex" : "none", flex: 1, flexDirection: "column", minHeight: 0 }}>
         <GuidedBuilder onRegister={(handlers) => registerHandlers("build", handlers)} />
       </div>
-      <div key="process" style={{ display: mode === "process" ? "flex" : "none", flexDirection: "column", height: "100%", paddingTop: 52, boxSizing: "border-box" }}>
+      <div key="process" style={{ display: mode === "process" ? "flex" : "none", flex: 1, flexDirection: "column", minHeight: 0 }}>
         <ProcessStudio onRegister={(handlers) => registerHandlers("process", handlers)} />
       </div>
-      <div key="architect" style={{ display: mode === "architect" ? "flex" : "none", flexDirection: "column", height: "100%", paddingTop: 52, boxSizing: "border-box" }}>
+      <div key="architect" style={{ display: mode === "architect" ? "flex" : "none", flex: 1, flexDirection: "column", minHeight: 0 }}>
         <ArchitectStudio onRegister={(handlers) => registerHandlers("architect", handlers)} />
       </div>
 
       {/* Diagrams Dashboard View */}
       {mode === "dashboard" && (
-        <div key="dashboard" style={{ height: "100%", background: T.paper, overflowY: "auto", padding: "60px 24px 40px" }}>
+        <div key="dashboard" style={{ flex: 1, background: T.paper, overflowY: "auto", padding: "24px" }}>
           <div style={{ maxWidth: 960, margin: "0 auto", background: "#FFFFFF", border: "1px solid #E6E1D6", borderRadius: 12, padding: "24px 30px" }}>
             <div style={{ display: "flex", alignItems: "center", borderBottom: "1px solid #E6E1D6", paddingBottom: 16, marginBottom: 20, gap: 12 }}>
               <FolderHeart size={24} color={T.amber} />
@@ -642,7 +717,7 @@ export default function App() {
 
       {/* Admin Login logs View */}
       {user.role === "appadmin" && mode === "history" && (
-        <div key="history" style={{ display: "block", height: "100%", background: T.paper, overflowY: "auto", padding: "60px 24px 40px" }}>
+        <div key="history" style={{ flex: 1, background: T.paper, overflowY: "auto", padding: "24px" }}>
           <div style={{ maxWidth: 800, margin: "0 auto", background: "#FFFFFF", border: "1px solid #E6E1D6", borderRadius: 12, padding: "24px 30px" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, borderBottom: "1px solid #E6E1D6", paddingBottom: 16, marginBottom: 20 }}>
               <ClipboardList size={22} color={T.amber} />
@@ -713,119 +788,8 @@ export default function App() {
         </div>
       )}
 
-      {/* Floating Mode Switcher & Logout Container */}
-      <div style={{
-        position: "fixed",
-        top: 9,
-        left: "50%",
-        transform: "translateX(-50%)",
-        zIndex: 9999,
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 6,
-        background: "rgba(15,24,48,.92)",
-        border: "1px solid #27324E",
-        borderRadius: 11,
-        padding: "3px 8px 3px 12px",
-        boxShadow: "0 4px 16px rgba(0,0,0,.28)",
-        fontFamily: "ui-sans-serif, system-ui, -apple-system, sans-serif"
-      }}>
-        {/* User Badge Info */}
-        <span style={{ fontSize: 11.5, color: "#8B97B6", marginRight: 8, display: "inline-flex", alignItems: "center", gap: 5 }}>
-          <User size={12} color="#D97706" />
-          <span style={{ fontWeight: 700, color: "#EAEEF8" }}>{user.username}</span>
-          <span style={{ fontSize: 10, color: T.invDim, background: T.railSoft, padding: "1px 5px", borderRadius: 4 }}>{user.role}</span>
-        </span>
 
-        {/* View Switchers */}
-        {visibleModes.map((m) => {
-          const on = mode === m.k;
-          return (
-            <button
-              key={m.k}
-              onClick={() => setMode(m.k)}
-              style={{
-                fontSize: 12,
-                fontWeight: on ? 700 : 500,
-                color: on ? "#1a1206" : "#8B97B6",
-                background: on ? "#D97706" : "transparent",
-                border: "none",
-                borderRadius: 8,
-                padding: "5px 12px",
-                cursor: "pointer"
-              }}
-            >
-              {m.label}
-            </button>
-          );
-        })}
-
-        {/* Action Button: Save Work (hide on logs & dashboard views) */}
-        {mode !== "history" && mode !== "dashboard" && (
-          <button
-            onClick={saveCurrentWork}
-            disabled={saveStatus === "saving"}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 5,
-              fontSize: 11.5,
-              fontWeight: 700,
-              color: "#fff",
-              background: saveStatus === "success" ? "#1e7e34" : saveStatus === "error" ? "#b85450" : "#0E7C7B",
-              border: "none",
-              borderRadius: 8,
-              padding: "5px 12px",
-              cursor: saveStatus === "saving" ? "default" : "pointer",
-              marginLeft: 4,
-              transition: "background 0.2s"
-            }}
-          >
-            {saveStatus === "saving" ? (
-              <RefreshCw size={12} className="ps-spin" />
-            ) : saveStatus === "success" ? (
-              <Check size={12} />
-            ) : (
-              <Save size={12} />
-            )}
-            {saveStatus === "saving" 
-              ? "Saving" 
-              : saveStatus === "success" 
-              ? "Saved!" 
-              : saveStatus === "error" 
-              ? "Failed" 
-              : activeDiagName 
-              ? `Save: ${activeDiagName}` 
-              : "Save Work"}
-          </button>
-        )}
-
-        {/* Logout Button */}
-        <button
-          onClick={handleLogout}
-          title="Sign Out"
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: 26,
-            height: 26,
-            borderRadius: 6,
-            background: "transparent",
-            border: "none",
-            color: "#8B97B6",
-            cursor: "pointer",
-            marginLeft: 4,
-            transition: "color 0.2s"
-          }}
-          onMouseEnter={(e) => (e.currentTarget.style.color = "#ff8b80")}
-          onMouseLeave={(e) => (e.currentTarget.style.color = "#8B97B6")}
-        >
-          <LogOut size={14} />
-        </button>
-      </div>
-      
-      {/* Vite spin styling override for spinner items */}
+      {/* Spin keyframe for Save button spinner */}
       <style>{`
         .ps-spin { animation: ps-rot .9s linear infinite; }
         @keyframes ps-rot { to { transform: rotate(360deg); } }
@@ -833,3 +797,4 @@ export default function App() {
     </div>
   );
 }
+
