@@ -71,12 +71,18 @@ const FILL = Object.fromEntries(Object.entries(NT).map(([k, v]) => [k, v.bd]));
 const TYPE_TAG = FILL;
 const trunc = (s, n) => (String(s).length > n ? String(s).slice(0, n) + "…" : String(s));
 // word-set (Jaccard) similarity — flags likely duplicate step content
-function similarSteps(text, nodes, excludeId, k = 4, threshold = 0.4) {
+function similarSteps(text, nodes, excludeId, k = 4, threshold = 0.35) {
   const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((w) => w.length > 2);
+  const rawA = String(text || "").trim().toLowerCase();
   const a = new Set(norm(text)); if (a.size < 1) return [];
   return nodes.filter((n) => n.id !== excludeId && n.label)
-    .map((n) => { const b = new Set(norm(n.label)); const inter = [...a].filter((w) => b.has(w)).length; const uni = new Set([...a, ...b]).size; return { n, score: uni ? inter / uni : 0 }; })
-    .filter((x) => x.score >= threshold).sort((x, y) => y.score - x.score).slice(0, k);
+    .map((n) => {
+      const rawB = String(n.label || "").trim().toLowerCase();
+      const exact = rawA.length > 3 && rawA === rawB;
+      const b = new Set(norm(n.label)); const inter = [...a].filter((w) => b.has(w)).length; const uni = new Set([...a, ...b]).size;
+      return { n, score: exact ? 1.0 : (uni ? inter / uni : 0), exact };
+    })
+    .filter((x) => x.exact || x.score >= threshold).sort((x, y) => (y.exact ? 2 : y.score) - (x.exact ? 2 : x.score)).slice(0, k);
 }
 let _uid = 0;
 const uid = (p = "n") => `${p}${Date.now().toString(36).slice(-4)}${_uid++}`;
@@ -602,6 +608,9 @@ export default function GuidedBuilder({ onRegister }) {
   const [pathQuery, setPathQuery] = useState("");
   const [edits, setEdits] = useState({});
   const [drawioUrl, setDrawioUrl] = useState("https://embed.diagrams.net/");
+  const [branchToRemove, setBranchToRemove] = useState(null);
+  const [showPick, setShowPick] = useState(false);
+  const [pickQuery, setPickQuery] = useState("");
 
   const stateRef = useRef();
   stateRef.current = { flowName, graph, cursor, pendingBranch, newType, newLabel, newBranches, newBranchName, view, fullFlow };
@@ -740,6 +749,45 @@ export default function GuidedBuilder({ onRegister }) {
     const id = uid();
     setGraph((g) => ({ ...g, nodes: [...g.nodes, { id, type: "information", label: master.label, refId: masterId }], edges: [...g.edges, { from: cursor, to: id, label: pendingBranch || "" }] }));
     setCursor(id); setPendingBranch(null); setNewLabel("");
+  };
+  const removeBranchResolved = (branchLabel, mode = "keep") => {
+    setGraph((g) => {
+      const decNode = g.nodes.find((n) => n.id === cursor);
+      if (!decNode || decNode.type !== "decision") return g;
+      const updatedBranches = (decNode.branches || []).filter((b) => b !== branchLabel);
+      const edgeToRemove = g.edges.find((e) => e.from === cursor && e.label === branchLabel);
+      let newEdges = g.edges.filter((e) => !(e.from === cursor && e.label === branchLabel));
+      let newNodes = g.nodes.map((n) => (n.id === cursor ? { ...n, branches: updatedBranches } : n));
+      if (mode === "delete" && edgeToRemove) {
+        const startId = edgeToRemove.to;
+        const reachableFromOthers = new Set();
+        const search = (id) => {
+          if (reachableFromOthers.has(id)) return;
+          reachableFromOthers.add(id);
+          g.edges.filter((e) => e.from === id).forEach((e) => search(e.to));
+        };
+        g.nodes.forEach((n) => {
+          if (n.id === cursor) return;
+          g.edges.filter((e) => e.from === n.id).forEach((e) => search(e.to));
+        });
+        g.edges.filter((e) => e.from === "start").forEach((e) => search(e.to));
+        search("start");
+        const toPurge = new Set();
+        const purgeDfs = (id) => {
+          if (reachableFromOthers.has(id) || toPurge.has(id)) return;
+          toPurge.add(id);
+          g.edges.filter((e) => e.from === id).forEach((e) => purgeDfs(e.to));
+        };
+        purgeDfs(startId);
+        if (toPurge.size > 0) {
+          newNodes = newNodes.filter((n) => !toPurge.has(n.id));
+          newEdges = newEdges.filter((e) => !toPurge.has(e.from) && !toPurge.has(e.to));
+        }
+      }
+      return { ...g, nodes: newNodes, edges: newEdges };
+    });
+    setBranchToRemove(null);
+    if (pendingBranch === branchLabel) setPendingBranch(null);
   };
   const updateType = (id, type) => setGraph((g) => ({ ...g, nodes: g.nodes.map((n) => (n.id === id ? { ...n, type, ...(type === "decision" && !n.branches ? { branches: ["Yes", "No"] } : {}) } : n)) }));
   const addBranch = (decId, label) => { const b = label.trim(); if (!b) return; setGraph((g) => ({ ...g, nodes: g.nodes.map((n) => (n.id === decId && !(n.branches || []).includes(b) ? { ...n, branches: [...(n.branches || []), b] } : n)) })); };
@@ -1071,21 +1119,46 @@ export default function GuidedBuilder({ onRegister }) {
                 {/* decision branches */}
                 {node.type === "decision" && (
                   <div style={{ marginTop: 16 }}>
-                    <div style={{ ...mono, fontSize: 10.5, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 7 }}>Branches — edit the condition, click to view or build</div>
+                    <div style={{ ...mono, fontSize: 10.5, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 7 }}>Branches — edit condition, build, or remove</div>
                     {(node.branches || []).map((b) => {
                       const child = branchChild(cursor, b); const active = pendingBranch === b;
+                      const hasBranch = (node.branches || []).length > 2;
                       return (
-                        <div key={b} style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 6 }}>
-                          <input defaultValue={b} spellCheck={false} title="Edit branch condition"
-                            onBlur={(e) => renameBranch(cursor, b, e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
-                            style={{ ...sans, flex: "0 0 96px", boxSizing: "border-box", fontSize: 12, fontWeight: 600, color: "#0a4a63", background: "#fff", border: `1px solid ${T.line}`, borderRadius: 7, padding: "7px 8px", outline: "none" }} />
-                          <button onClick={() => goBranch(b)}
-                            style={{ ...sans, display: "flex", alignItems: "center", gap: 6, flex: 1, textAlign: "left", cursor: "pointer", fontSize: 12, fontWeight: 600,
-                              color: child ? "#0a4a63" : active ? "#1a1206" : T.inkSoft, background: child ? "#d6ecf7" : active ? T.amberSoft : "#fff",
-                              border: `1.5px solid ${child ? "#0e86b8" : active ? T.amber : T.line}`, borderRadius: 8, padding: "7px 9px" }}>
-                            {child ? <CornerDownRight size={13} /> : <Plus size={13} />}
-                            <span style={{ ...sans, fontWeight: 400, fontSize: 11.5 }}>{child ? trunc(byId[child].label, 18) : active ? "building…" : "empty — build"}</span>
-                          </button>
+                        <div key={b} style={{ marginBottom: 6 }}>
+                          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                            <input defaultValue={b} spellCheck={false} title="Edit branch condition"
+                              onBlur={(e) => renameBranch(cursor, b, e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
+                              style={{ ...sans, flex: "0 0 96px", boxSizing: "border-box", fontSize: 12, fontWeight: 600, color: "#0a4a63", background: "#fff", border: `1px solid ${T.line}`, borderRadius: 7, padding: "7px 8px", outline: "none" }} />
+                            <button onClick={() => goBranch(b)}
+                              style={{ ...sans, display: "flex", alignItems: "center", gap: 6, flex: 1, textAlign: "left", cursor: "pointer", fontSize: 12, fontWeight: 600,
+                                color: child ? "#0a4a63" : active ? "#1a1206" : T.inkSoft, background: child ? "#d6ecf7" : active ? T.amberSoft : "#fff",
+                                border: `1.5px solid ${child ? "#0e86b8" : active ? T.amber : T.line}`, borderRadius: 8, padding: "7px 9px" }}>
+                              {child ? <CornerDownRight size={13} /> : <Plus size={13} />}
+                              <span style={{ ...sans, fontWeight: 400, fontSize: 11.5 }}>{child ? trunc(byId[child].label, 18) : active ? "building…" : "empty — build"}</span>
+                            </button>
+                            {hasBranch && (
+                              <button onClick={() => setBranchToRemove((cur) => (cur === b ? null : b))} title="Remove this branch option"
+                                style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 28, height: 28, background: "transparent", border: `1px solid ${T.line}`, borderRadius: 7, color: "#b85450", cursor: "pointer" }}>
+                                <Trash2 size={13} />
+                              </button>
+                            )}
+                          </div>
+                          {branchToRemove === b && (
+                            <div style={{ marginTop: 6, background: "#FFF6E6", border: "1px solid #E7C878", borderRadius: 8, padding: "9px 11px" }}>
+                              <div style={{ ...sans, fontSize: 12, fontWeight: 600, color: "#8a5a00", marginBottom: 6 }}>Remove “{b}” branch?</div>
+                              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                                {child ? (
+                                  <>
+                                    <button onClick={() => removeBranchResolved(b, "keep")} style={{ ...sans, fontSize: 11.5, fontWeight: 600, color: "#1a1206", background: T.amber, border: "none", borderRadius: 6, padding: "6px 9px", cursor: "pointer" }}>Remove branch (keep steps)</button>
+                                    <button onClick={() => removeBranchResolved(b, "delete")} style={{ ...sans, fontSize: 11.5, color: "#b85450", background: "#fff", border: "1px solid #b85450", borderRadius: 6, padding: "6px 9px", cursor: "pointer" }}>Delete branch & unlinked steps</button>
+                                  </>
+                                ) : (
+                                  <button onClick={() => removeBranchResolved(b, "keep")} style={{ ...sans, fontSize: 12, fontWeight: 600, color: "#1a1206", background: T.amber, border: "none", borderRadius: 7, padding: "7px 11px", cursor: "pointer" }}>Remove branch</button>
+                                )}
+                                <button onClick={() => setBranchToRemove(null)} style={{ ...sans, fontSize: 12, color: T.inkSoft, background: "#fff", border: `1px solid ${T.line}`, borderRadius: 7, padding: "7px 11px", cursor: "pointer" }}>Cancel</button>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       );
                     })}
@@ -1146,20 +1219,56 @@ export default function GuidedBuilder({ onRegister }) {
                     const nd = similarSteps(newLabel, graph.nodes, null);
                     return nd.length > 0 ? (
                       <div style={{ marginTop: 8, background: "#FFF6E6", border: "1px solid #E7C878", borderRadius: 8, padding: "8px 10px" }}>
-                        <div style={{ ...sans, fontSize: 11.5, fontWeight: 600, color: "#8a5a00", marginBottom: 6 }}>⚠ Similar step exists — reuse it instead?</div>
+                        <div style={{ ...sans, fontSize: 11.5, fontWeight: 600, color: "#8a5a00", marginBottom: 6 }}>
+                          {nd.some((s) => s.exact) ? "⚠ This step already exists" : "⚠ Similar step exists — reuse it instead?"}
+                        </div>
                         {nd.map((s) => (
                           <div key={s.n.id} style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 5 }}>
-                            <button onClick={() => useExisting(s.n.id)} title="Point the flow to this existing step (no duplicate)"
-                              style={{ ...sans, flex: 1, textAlign: "left", cursor: "pointer", background: "#fff", border: `1px solid ${T.line}`, borderRadius: 6, padding: "5px 8px", fontSize: 11.5, color: T.ink }}>
-                              <span style={{ ...mono, fontSize: 9.5, color: "#8a5a00", marginRight: 6 }}>{Math.round(s.score * 100)}%</span>{trunc(s.n.label, 38)}
+                            <button onClick={() => useExisting(s.n.id)} title="Link the flow to this existing step instead of creating a duplicate"
+                              style={{ ...sans, flex: 1, display: "flex", alignItems: "center", gap: 6, textAlign: "left", cursor: "pointer", background: "#fff", border: `1px solid ${s.exact ? "#c9a24a" : T.line}`, borderRadius: 6, padding: "5px 8px", fontSize: 11.5, color: T.ink }}>
+                              <span style={{ ...mono, fontSize: 9.5, fontWeight: 700, color: "#8a5a00" }}>{s.exact ? "SAME" : Math.round(s.score * 100) + "%"}</span>
+                              <span style={{ flex: 1, minWidth: 0 }}>{trunc(s.n.label, 34)}</span>
+                              <Link2 size={11} style={{ opacity: 0.6, flexShrink: 0 }} />
                             </button>
-                            <button onClick={() => setNewLabel(s.n.label)} title="Copy this wording into the new step"
+                            <button onClick={() => setNewLabel(s.n.label)} title="Copy this wording into the box above"
                               style={{ ...sans, cursor: "pointer", background: T.panel, border: `1px solid ${T.line}`, borderRadius: 6, padding: "5px 8px", fontSize: 11, color: T.textDim }}>copy</button>
                           </div>
                         ))}
-                        <div style={{ ...mono, fontSize: 10, color: "#8a5a00", marginTop: 2 }}>click a step to link to it · “copy” reuses the wording</div>
+                        <div style={{ ...mono, fontSize: 10, color: "#8a5a00", marginTop: 2 }}>click the step to link to it (no duplicate) · “copy” just reuses the wording</div>
                       </div>
                     ) : null;
+                  })()}
+                  {/* route this branch / next step to a step that already exists */}
+                  <button onClick={() => setShowPick((v) => !v)}
+                    style={{ ...sans, display: "flex", alignItems: "center", gap: 6, width: "100%", justifyContent: "center", marginTop: 8, fontSize: 12, color: T.inkSoft, background: "transparent", border: `1px dashed ${T.line}`, borderRadius: 8, padding: "7px 10px", cursor: "pointer" }}>
+                    <Link2 size={13} /> {showPick ? "Hide existing steps" : "Or link to an existing step"}
+                  </button>
+                  {showPick && (() => {
+                    const q = pickQuery.trim().toLowerCase();
+                    const candidates = graph.nodes
+                      .filter((n) => n.id !== cursor && n.id !== "start" && n.label)
+                      .filter((n) => !q || n.label.toLowerCase().includes(q))
+                      .slice(0, 40);
+                    return (
+                      <div style={{ marginTop: 8, background: "#F6F4EE", border: `1px solid ${T.line}`, borderRadius: 8, padding: 8 }}>
+                        <input value={pickQuery} onChange={(e) => setPickQuery(e.target.value)} spellCheck={false} placeholder="Search existing steps…"
+                          style={{ ...sans, width: "100%", boxSizing: "border-box", fontSize: 12.5, color: T.ink, background: "#fff", border: `1px solid ${T.line}`, borderRadius: 7, padding: "7px 9px", outline: "none", marginBottom: 6 }} />
+                        <div style={{ maxHeight: 190, overflow: "auto" }}>
+                          {candidates.length === 0 && <div style={{ ...sans, fontSize: 12, color: T.textDim, padding: "6px 2px" }}>No matching steps.</div>}
+                          {candidates.map((n) => (
+                            <button key={n.id} onClick={() => { useExisting(n.id); setShowPick(false); setPickQuery(""); }} title="Route this branch to the existing step (no duplicate)"
+                              style={{ ...sans, display: "flex", alignItems: "center", gap: 7, width: "100%", textAlign: "left", cursor: "pointer", background: "#fff", border: `1px solid ${T.line}`, borderRadius: 6, padding: "6px 8px", marginBottom: 5, fontSize: 12, color: T.ink }}>
+                              <span style={{ width: 8, height: 8, borderRadius: 2, background: (NT[n.type] || NT.step).bd, flexShrink: 0 }} />
+                              <span style={{ flex: 1, minWidth: 0 }}>{trunc(n.label, 40)}</span>
+                              <span style={{ ...mono, fontSize: 9, color: T.textDim, textTransform: "uppercase" }}>{(NT[n.type] || {}).name || n.type}</span>
+                            </button>
+                          ))}
+                        </div>
+                        <div style={{ ...mono, fontSize: 10, color: T.textDim, marginTop: 2 }}>
+                          links {isDecisionCursor && pendingBranch ? `the “${pendingBranch}” branch` : "this step"} to an existing one — flows can rejoin here
+                        </div>
+                      </div>
+                    );
                   })()}
                   <button onClick={add} disabled={newType !== "end" && !newLabel.trim()}
                     style={{ ...sans, width: "100%", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 7, fontSize: 13.5, fontWeight: 600, marginTop: 8, color: "#1a1206", background: newType === "end" || newLabel.trim() ? T.amber : T.amberSoft, border: "none", borderRadius: 8, padding: "9px 12px", cursor: newType === "end" || newLabel.trim() ? "pointer" : "default" }}>
