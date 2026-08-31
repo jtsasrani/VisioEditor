@@ -1122,7 +1122,7 @@ export default function GuidedBuilder({ onRegister }) {
                     <div style={{ ...mono, fontSize: 10.5, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 7 }}>Branches — edit condition, build, or remove</div>
                     {(node.branches || []).map((b) => {
                       const child = branchChild(cursor, b); const active = pendingBranch === b;
-                      const hasBranch = (node.branches || []).length > 2;
+                      const hasBranch = (node.branches || []).length > 1;
                       return (
                         <div key={b} style={{ marginBottom: 6 }}>
                           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
