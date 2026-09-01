@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   Play, Plus, ChevronLeft, ChevronRight, CornerDownRight, GitBranch, Flag,
-  Download, Copy, Check, PanelLeftClose, PanelLeftOpen, Hand, Cpu, Trash2, Maximize2, Network, Hammer, Save, FilePlus2, Route, ExternalLink, FileText, Link2
+  Download, Copy, Check, PanelLeftClose, PanelLeftOpen, Hand, Cpu, Trash2, Maximize2, Network, Hammer, Save, FilePlus2, Route, ExternalLink, FileText, Link2, Upload
 } from "lucide-react";
 import mermaid from "mermaid";
 
@@ -70,6 +70,74 @@ const ADD_TYPES = ["process", "manual", "information", "decision", "end"];
 const FILL = Object.fromEntries(Object.entries(NT).map(([k, v]) => [k, v.bd]));
 const TYPE_TAG = FILL;
 const trunc = (s, n) => (String(s).length > n ? String(s).slice(0, n) + "…" : String(s));
+// Adapt an uploaded JSON export into the builder's graph model. Accepts either the app's native
+// shape { title?, nodes:[{id,label|text,type?,branches?}], edges:[{from,to,label?}] }, or a flat
+// array of shapes — with explicit from/to, or (last resort) reconstructed from x/y/width/height.
+function adaptJson(data) {
+  const typeMap = { start: "start", end: "end", decision: "decision", manual: "manual", information: "information", process: "process", step: "process" };
+  const num = (v) => parseFloat(v) || 0;
+  let nodes = [], edges = [], title = "Imported flow";
+  const mkNode = (n, i) => ({ id: String(n.id != null ? n.id : "n" + i), label: String(n.label != null ? n.label : n.text != null ? n.text : "").trim() || "(unnamed)", type: typeMap[String(n.type || "").toLowerCase()] || "process", ...(Array.isArray(n.branches) ? { branches: n.branches } : {}) });
+
+  if (data && !Array.isArray(data) && Array.isArray(data.nodes)) {
+    title = data.title || title;
+    nodes = data.nodes.map(mkNode);
+    edges = (data.edges || []).map((e) => ({ from: String(e.from), to: String(e.to), label: e.label || "" }));
+  } else if (Array.isArray(data) && data.length && data[0] && data[0].logical_step_id != null && data[0].step_type != null) {
+    title = "Imported process";
+    const btype = (it) => {
+      const st = String(it.step_type || "").toLowerCase();
+      if (st === "start") return "start";
+      if (st === "end") return "end";
+      if (st === "decision") return "decision";
+      const at = String(it.actiontype || "").toLowerCase();
+      if (at === "manual") return "manual";
+      if (at === "info") return "information";
+      return "process";
+    };
+    nodes = data.map((it) => ({ id: String(it.logical_step_id), label: String(it.step_text || "").trim() || "(unnamed)", type: btype(it) }));
+    const idset = new Set(nodes.map((n) => n.id));
+    for (const it of data) {
+      const from = String(it.logical_step_id);
+      const outcomes = it.decision_outcomes && typeof it.decision_outcomes === "object" ? it.decision_outcomes : null;
+      if (outcomes && Object.keys(outcomes).length) {
+        for (const [label, tgt] of Object.entries(outcomes)) {
+          const to = tgt && (tgt.logical_step_id || tgt.id);
+          if (to && idset.has(String(to))) edges.push({ from, to: String(to), label });
+        }
+        const nd = nodes.find((n) => n.id === from); if (nd) nd.branches = Object.keys(outcomes);
+      } else {
+        for (const to of it.next_logical_step_ids || []) if (idset.has(String(to))) edges.push({ from, to: String(to), label: "" });
+      }
+    }
+  } else if (Array.isArray(data)) {
+    const hasLinks = data.some((it) => it.from != null || it.source != null);
+    if (hasLinks) {
+      nodes = data.filter((it) => it.from == null && it.source == null).map(mkNode);
+      edges = data.filter((it) => it.from != null || it.source != null).map((it) => ({ from: String(it.from != null ? it.from : it.source), to: String(it.to != null ? it.to : it.target), label: it.label || it.text || "" }));
+    } else {
+      const isBox = (it) => num(it.width) >= 0.6 && num(it.height) >= 0.25;
+      const nodeItems = data.filter((it) => (it.text && it.text.trim()) || isBox(it));
+      const connItems = data.filter((it) => !((it.text && it.text.trim()) || isBox(it)));
+      nodes = nodeItems.map((it, i) => ({ id: String(it.id != null ? it.id : "n" + i), label: String(it.text || "").trim() || "(unnamed)", type: "process" }));
+      const centers = nodeItems.map((it, i) => ({ id: String(it.id != null ? it.id : "n" + i), x: num(it.x) + num(it.width) / 2, y: num(it.y) + num(it.height) / 2 }));
+      const nearest = (x, y) => { let best = null, bd = Infinity; for (const c of centers) { const d = (c.x - x) ** 2 + (c.y - y) ** 2; if (d < bd) { bd = d; best = c; } } return best; };
+      for (const c of connItems) {
+        const x = num(c.x), y = num(c.y), w = num(c.width), h = num(c.height);
+        const a = nearest(x, y), b = nearest(x + w, y + h);
+        if (a && b && a.id !== b.id) edges.push({ from: a.id, to: b.id, label: String(c.text || "").trim() });
+      }
+    }
+  }
+  const ids = new Set(nodes.map((n) => n.id));
+  edges = edges.filter((e) => ids.has(e.from) && ids.has(e.to));
+  nodes.forEach((n) => { if (n.type === "decision") { const l = [...new Set(edges.filter((e) => e.from === n.id && e.label).map((e) => e.label))]; n.branches = l.length ? l : ["Yes", "No"]; } });
+  let start = nodes.find((n) => n.type === "start") || nodes.find((n) => !edges.some((e) => e.to === n.id)) || nodes[0];
+  if (start && start.id !== "start") { const old = start.id; nodes = nodes.map((n) => (n.id === old ? { ...n, id: "start" } : n)); edges = edges.map((e) => ({ ...e, from: e.from === old ? "start" : e.from, to: e.to === old ? "start" : e.to })); start = nodes.find((n) => n.id === "start"); }
+  if (start && start.type === "process") start.type = "start";
+  return { title, nodes, edges, startId: start ? start.id : "start", unlabeled: nodes.filter((n) => n.label === "(unnamed)").length };
+}
+
 // word-set (Jaccard) similarity — flags likely duplicate step content
 function similarSteps(text, nodes, excludeId, k = 4, threshold = 0.35) {
   const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((w) => w.length > 2);
@@ -611,6 +679,10 @@ export default function GuidedBuilder({ onRegister }) {
   const [branchToRemove, setBranchToRemove] = useState(null);
   const [showPick, setShowPick] = useState(false);
   const [pickQuery, setPickQuery] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [importErr, setImportErr] = useState("");
+  const vsdxRef = useRef(null);
+  const jsonRef = useRef(null);
 
   const stateRef = useRef();
   stateRef.current = { flowName, graph, cursor, pendingBranch, newType, newLabel, newBranches, newBranchName, view, fullFlow };
@@ -789,6 +861,57 @@ export default function GuidedBuilder({ onRegister }) {
     setBranchToRemove(null);
     if (pendingBranch === branchLabel) setPendingBranch(null);
   };
+
+  const mapImported = (g) => {
+    const typeMap = { start: "start", end: "end", decision: "decision", manual: "manual", information: "information", process: "process", step: "process" };
+    const nodes = (g.nodes || []).map((n) => ({ id: String(n.id), label: n.label || "(unnamed)", type: typeMap[n.type] || "process" }));
+    const edges = (g.edges || []).map((e) => ({ from: String(e.from), to: String(e.to), label: e.label || "" }));
+    const ids = new Set(nodes.map((n) => n.id));
+    const clean = edges.filter((e) => ids.has(e.from) && ids.has(e.to));
+    nodes.forEach((n) => {
+      if (n.type === "decision") {
+        const labs = [...new Set(clean.filter((e) => e.from === n.id && e.label).map((e) => e.label))];
+        n.branches = labs.length ? labs : ["Yes", "No"];
+      }
+    });
+    let start = nodes.find((n) => n.type === "start") || nodes.find((n) => !clean.some((e) => e.to === n.id)) || nodes[0];
+    if (!start) { start = { id: "start", label: g.title || "Imported flow", type: "start" }; nodes.unshift(start); }
+    return { title: g.title || "Imported flow", nodes, edges: clean, startId: start.id };
+  };
+
+  const onImportJson = async (file) => {
+    if (!file) return;
+    setImporting(true); setImportErr("");
+    try {
+      const text = await file.text();
+      let data; try { data = JSON.parse(text); } catch { throw new Error("Not valid JSON"); }
+      const m = adaptJson(data);
+      if (!m.nodes.length) throw new Error(`No flow steps found.`);
+      setGraph({ title: m.title, nodes: m.nodes, edges: m.edges });
+      setFlowName(m.title); setCursor(m.startId); setPendingBranch(null); setView("build");
+      const warn = [];
+      if (!m.edges.length) warn.push("no connections found");
+      if (m.unlabeled) warn.push(`${m.unlabeled} step(s) have no text`);
+      setImportErr(warn.length ? `Loaded ${m.nodes.length} steps — ${warn.join(", ")}.` : "");
+    } catch (e) { setImportErr(e.message || "Import failed"); }
+    finally { setImporting(false); if (jsonRef.current) jsonRef.current.value = ""; }
+  };
+
+  const onImportVsdx = async (file) => {
+    if (!file) return;
+    setImporting(true); setImportErr("");
+    try {
+      const b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1]); r.onerror = rej; r.readAsDataURL(file); });
+      const r = await fetch("/diagram/api/process/vsdx", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ vsdx: b64 }) });
+      if (!r.ok) throw new Error(`Import failed (${r.status})`);
+      const g = await r.json();
+      if (!g.nodes || !g.nodes.length) throw new Error("No shapes found in the .vsdx");
+      const m = mapImported(g);
+      setGraph({ title: m.title, nodes: m.nodes, edges: m.edges });
+      setFlowName(m.title); setCursor(m.startId); setPendingBranch(null); setView("build");
+    } catch (e) { setImportErr(e.message || "Import failed"); }
+    finally { setImporting(false); if (vsdxRef.current) vsdxRef.current.value = ""; }
+  };
   const updateType = (id, type) => setGraph((g) => ({ ...g, nodes: g.nodes.map((n) => (n.id === id ? { ...n, type, ...(type === "decision" && !n.branches ? { branches: ["Yes", "No"] } : {}) } : n)) }));
   const addBranch = (decId, label) => { const b = label.trim(); if (!b) return; setGraph((g) => ({ ...g, nodes: g.nodes.map((n) => (n.id === decId && !(n.branches || []).includes(b) ? { ...n, branches: [...(n.branches || []), b] } : n)) })); };
   // rename a branch condition — keeps the decision's branch list and its edge labels in sync
@@ -886,6 +1009,18 @@ export default function GuidedBuilder({ onRegister }) {
                 <FilePlus2 size={14} /> New
               </button>
             </div>
+            <input ref={vsdxRef} type="file" accept=".vsdx" style={{ display: "none" }} onChange={(e) => onImportVsdx(e.target.files[0])} />
+            <input ref={jsonRef} type="file" accept=".json,application/json" style={{ display: "none" }} onChange={(e) => onImportJson(e.target.files[0])} />
+            <button onClick={() => vsdxRef.current && vsdxRef.current.click()} disabled={importing}
+              style={{ ...sans, width: "100%", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 8, fontSize: 13, fontWeight: 600, color: T.inv, background: T.railSoft, border: `1px solid ${T.railLine}`, borderRadius: 9, padding: "9px 12px", cursor: importing ? "default" : "pointer", opacity: importing ? 0.6 : 1 }}>
+              {importing ? <Cpu size={14} /> : <Upload size={14} />}{importing ? "Importing…" : "Import Visio (.vsdx)"}
+            </button>
+            <button onClick={() => jsonRef.current && jsonRef.current.click()} disabled={importing}
+              style={{ ...sans, width: "100%", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 8, fontSize: 13, fontWeight: 600, color: T.inv, background: "transparent", border: `1px solid ${T.railLine}`, borderRadius: 9, padding: "9px 12px", cursor: importing ? "default" : "pointer", opacity: importing ? 0.6 : 1 }}>
+              <Upload size={14} /> Import JSON
+            </button>
+            {importErr && <div style={{ ...sans, fontSize: 11.5, color: "#ffb4a8", marginTop: 6 }}>{importErr}</div>}
+            <div style={{ ...sans, fontSize: 11, color: T.invDim, marginTop: 6, lineHeight: 1.45 }}>Imports a .vsdx or JSON into an editable flow — decisions, branches and steps are mapped in.</div>
           </div>
 
           {savedFlows.length > 0 && (
