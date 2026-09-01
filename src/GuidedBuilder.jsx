@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   Play, Plus, ChevronLeft, ChevronRight, CornerDownRight, GitBranch, Flag,
-  Download, Copy, Check, PanelLeftClose, PanelLeftOpen, Hand, Cpu, Trash2, Maximize2, Network, Hammer, Save, FilePlus2, Route, ExternalLink, FileText, Link2, Upload
+  Download, Copy, Check, PanelLeftClose, PanelLeftOpen, Hand, Cpu, Trash2, Maximize2, Network, Hammer, Save, FilePlus2, Route, ExternalLink, Link2, Upload,
 } from "lucide-react";
 import mermaid from "mermaid";
 
@@ -24,7 +24,6 @@ function MermaidView({ chart }) {
           nodes: [ref.current]
         });
       } catch (err) {
-        // Suppress and log syntax errors gracefully during editing
         console.warn("Mermaid parsing error:", err);
       }
     }
@@ -36,6 +35,7 @@ function MermaidView({ chart }) {
     </div>
   );
 }
+
 import PROFILE from "./template-profile.json";
 
 /* ------------------------------------------------------------------ *
@@ -70,6 +70,35 @@ const ADD_TYPES = ["process", "manual", "information", "decision", "end"];
 const FILL = Object.fromEntries(Object.entries(NT).map(([k, v]) => [k, v.bd]));
 const TYPE_TAG = FILL;
 const trunc = (s, n) => (String(s).length > n ? String(s).slice(0, n) + "…" : String(s));
+// word-set (Jaccard) similarity — flags likely duplicate step content
+// filler words that inflate the union and hide real matches
+const STOP = new Set(["the", "and", "for", "with", "from", "that", "this", "are", "was", "has", "have", "been", "its", "into", "onto", "per", "via", "not", "but", "all", "any", "can", "will", "shall", "must", "should", "may", "then", "when"]);
+const normWords = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((w) => w.length > 2 && !STOP.has(w));
+// Similarity for duplicate detection. Pure Jaccard punishes length differences, so a
+// half-typed step never matches its longer twin — we take the best of Jaccard and
+// containment (how much of the shorter text is inside the longer) so partial typing matches.
+function similarSteps(text, nodes, excludeId, k = 4, threshold = 0.34) {
+  const a = new Set(normWords(text));
+  if (a.size < 1) return [];
+  const typed = String(text).trim().toLowerCase();
+  const out = [];
+  for (const n of nodes) {
+    if (n.id === excludeId || !n.label) continue;
+    const b = new Set(normWords(n.label));
+    if (!b.size) continue;
+    let inter = 0; for (const w of a) if (b.has(w)) inter++;
+    if (!inter) continue;
+    const uni = new Set([...a, ...b]).size;
+    const jaccard = uni ? inter / uni : 0;
+    const containment = inter / Math.min(a.size, b.size);
+    const exact = typed === String(n.label).trim().toLowerCase();
+    const score = exact ? 1 : Math.max(jaccard, containment * 0.9);
+    if (score >= threshold) out.push({ n, score, exact });
+  }
+  return out.sort((x, y) => y.score - x.score).slice(0, k);
+}
+let _uid = 0;
+const uid = (p = "n") => `${p}${Date.now().toString(36).slice(-4)}${_uid++}`;
 // Adapt an uploaded JSON export into the builder's graph model. Accepts either the app's native
 // shape { title?, nodes:[{id,label|text,type?,branches?}], edges:[{from,to,label?}] }, or a flat
 // array of shapes — with explicit from/to, or (last resort) reconstructed from x/y/width/height.
@@ -80,10 +109,12 @@ function adaptJson(data) {
   const mkNode = (n, i) => ({ id: String(n.id != null ? n.id : "n" + i), label: String(n.label != null ? n.label : n.text != null ? n.text : "").trim() || "(unnamed)", type: typeMap[String(n.type || "").toLowerCase()] || "process", ...(Array.isArray(n.branches) ? { branches: n.branches } : {}) });
 
   if (data && !Array.isArray(data) && Array.isArray(data.nodes)) {
+    // native graph
     title = data.title || title;
     nodes = data.nodes.map(mkNode);
     edges = (data.edges || []).map((e) => ({ from: String(e.from), to: String(e.to), label: e.label || "" }));
   } else if (Array.isArray(data) && data.length && data[0] && data[0].logical_step_id != null && data[0].step_type != null) {
+    // universal process-flow export: step objects with logical ids, next-step ids and decision outcomes
     title = "Imported process";
     const btype = (it) => {
       const st = String(it.step_type || "").toLowerCase();
@@ -113,9 +144,11 @@ function adaptJson(data) {
   } else if (Array.isArray(data)) {
     const hasLinks = data.some((it) => it.from != null || it.source != null);
     if (hasLinks) {
+      // explicit connectivity: split items into nodes vs edges
       nodes = data.filter((it) => it.from == null && it.source == null).map(mkNode);
       edges = data.filter((it) => it.from != null || it.source != null).map((it) => ({ from: String(it.from != null ? it.from : it.source), to: String(it.to != null ? it.to : it.target), label: it.label || it.text || "" }));
     } else {
+      // geometry only: box-like or text-bearing shapes are nodes; the rest are connectors
       const isBox = (it) => num(it.width) >= 0.6 && num(it.height) >= 0.25;
       const nodeItems = data.filter((it) => (it.text && it.text.trim()) || isBox(it));
       const connItems = data.filter((it) => !((it.text && it.text.trim()) || isBox(it)));
@@ -129,6 +162,7 @@ function adaptJson(data) {
       }
     }
   }
+  // clean, derive decision branches, normalise start id to "start"
   const ids = new Set(nodes.map((n) => n.id));
   edges = edges.filter((e) => ids.has(e.from) && ids.has(e.to));
   nodes.forEach((n) => { if (n.type === "decision") { const l = [...new Set(edges.filter((e) => e.from === n.id && e.label).map((e) => e.label))]; n.branches = l.length ? l : ["Yes", "No"]; } });
@@ -137,23 +171,45 @@ function adaptJson(data) {
   if (start && start.type === "process") start.type = "start";
   return { title, nodes, edges, startId: start ? start.id : "start", unlabeled: nodes.filter((n) => n.label === "(unnamed)").length };
 }
-
-// word-set (Jaccard) similarity — flags likely duplicate step content
-function similarSteps(text, nodes, excludeId, k = 4, threshold = 0.35) {
-  const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((w) => w.length > 2);
-  const rawA = String(text || "").trim().toLowerCase();
-  const a = new Set(norm(text)); if (a.size < 1) return [];
-  return nodes.filter((n) => n.id !== excludeId && n.label)
-    .map((n) => {
-      const rawB = String(n.label || "").trim().toLowerCase();
-      const exact = rawA.length > 3 && rawA === rawB;
-      const b = new Set(norm(n.label)); const inter = [...a].filter((w) => b.has(w)).length; const uni = new Set([...a, ...b]).size;
-      return { n, score: exact ? 1.0 : (uni ? inter / uni : 0), exact };
-    })
-    .filter((x) => x.exact || x.score >= threshold).sort((x, y) => (y.exact ? 2 : y.score) - (x.exact ? 2 : x.score)).slice(0, k);
+// reachable node set following edges forward from a start id
+function reachableFrom(graph, startId) {
+  const seen = new Set(); if (!startId) return seen;
+  const stack = [startId];
+  while (stack.length) { const x = stack.pop(); if (seen.has(x)) continue; seen.add(x); graph.edges.filter((e) => e.from === x).forEach((e) => stack.push(e.to)); }
+  return seen;
 }
-let _uid = 0;
-const uid = (p = "n") => `${p}${Date.now().toString(36).slice(-4)}${_uid++}`;
+// if all of a decision's branches eventually reach one common downstream node, return the nearest such join
+function reconvergePoint(graph, decId) {
+  const kids = graph.edges.filter((e) => e.from === decId).map((e) => e.to);
+  if (kids.length < 2) return null;
+  const sets = kids.map((k) => reachableFrom(graph, k));
+  let common = [...sets[0]].filter((x) => x !== decId && sets.every((s) => s.has(x)));
+  if (!common.length) return null;
+  const depth = {}; const q = [[decId, 0]]; const seen = new Set();
+  while (q.length) { const [x, d] = q.shift(); if (seen.has(x)) continue; seen.add(x); depth[x] = d; graph.edges.filter((e) => e.from === x).forEach((e) => q.push([e.to, d + 1])); }
+  common.sort((a, b) => (depth[a] ?? 1e9) - (depth[b] ?? 1e9));
+  return common[0];
+}
+// Change a node's type without losing decision structure. Leaving 'decision' stashes its
+// branches; returning to 'decision' restores them — falling back to the labels on the node's
+// existing outgoing edges, so the Yes/No -> child connections always come back.
+function retypeNode(n, type, edges) {
+  if (n.type === type) return { ...n, type };
+  if (type === "decision") {
+    const edgeLabels = [...new Set(edges.filter((e) => e.from === n.id && e.label).map((e) => e.label))];
+    const stash = n._stashBranches;
+    const branches = stash && stash.length ? stash
+      : edgeLabels.length ? edgeLabels
+      : n.branches && n.branches.length ? n.branches : ["Yes", "No"];
+    const { _stashBranches, ...rest } = n;
+    return { ...rest, type, branches };
+  }
+  if (n.branches && n.branches.length) {
+    const { branches, ...rest } = n;
+    return { ...rest, type, _stashBranches: branches };
+  }
+  return { ...n, type };
+}
 
 /* ---- graph helpers ---- */
 const parentMap = (g) => { const m = {}; g.edges.forEach((e) => (m[e.to] = e.from)); return m; };
@@ -192,26 +248,119 @@ function toMermaid(g) {
 }
 // deterministic tree layout + template-styled draw.io
 function layoutFlow(g) {
-  const kids = {}; g.nodes.forEach((n) => (kids[n.id] = []));
-  g.edges.forEach((e) => kids[e.from] && kids[e.from].push(e.to));
-  const byId = Object.fromEntries(g.nodes.map((n) => [n.id, n]));
-  const start = g.nodes.find((n) => n.type === "start") || g.nodes[0];
-  let leaf = 0;
-  const place = (id, depth, seen) => {
-    if (!byId[id] || seen.has(id)) return; seen.add(id);
-    const n = byId[id]; n._d = depth;
-    const ch = kids[id].filter((c) => !seen.has(c));
-    if (!ch.length) { n._c = leaf++; }
-    else { ch.forEach((c) => place(c, depth + 1, seen)); n._c = (byId[ch[0]]._c + byId[ch[ch.length - 1]]._c) / 2; }
-  };
-  place(start.id, 0, new Set());
-  // number process/step in BFS order
-  let seq = 1; const seen = new Set(), q = [start.id];
-  while (q.length) { const id = q.shift(); if (seen.has(id)) continue; seen.add(id); const n = byId[id]; if (n && (n.type === "process" || n.type === "step")) n.seq = seq++; kids[id].forEach((c) => q.push(c)); }
-  g.nodes.forEach((n) => { n.x = Math.round((n._c || 0) * 260 + 40); n.y = Math.round((n._d || 0) * 150 + 40); });
+  const nodes = g.nodes, edges = g.edges;
+  const byId = Object.fromEntries(nodes.map((n) => [n.id, n]));
+  const kids = {}, parents = {}, indeg = {};
+  nodes.forEach((n) => { kids[n.id] = []; parents[n.id] = []; indeg[n.id] = 0; });
+  edges.forEach((e) => { if (byId[e.from] && byId[e.to]) { kids[e.from].push(e.to); parents[e.to].push(e.from); indeg[e.to]++; } });
+  // layer = longest path from any root, via Kahn topological order (handles multiple starts + merges)
+  const layer = {}; nodes.forEach((n) => (layer[n.id] = 0));
+  const deg = { ...indeg }, q = nodes.filter((n) => deg[n.id] === 0).map((n) => n.id), seen = new Set();
+  while (q.length) {
+    const id = q.shift(); if (seen.has(id)) continue; seen.add(id);
+    for (const c of kids[id]) { layer[c] = Math.max(layer[c], layer[id] + 1); if (--deg[c] === 0) q.push(c); }
+  }
+  // nodes left in cycles: place just below their deepest known parent
+  nodes.forEach((n) => { if (!seen.has(n.id)) { const pl = parents[n.id].map((p) => layer[p] || 0); layer[n.id] = pl.length ? Math.max(...pl) + 1 : 0; } });
+  // group into layers, order within each layer to cut crossings (down + up barycenter sweeps)
+  const layers = {}; nodes.forEach((n) => { (layers[layer[n.id]] = layers[layer[n.id]] || []).push(n.id); });
+  const depths = Object.keys(layers).map(Number).sort((a, b) => a - b);
+  const pos = {}; depths.forEach((d) => layers[d].forEach((id, i) => (pos[id] = i)));
+  const median = (a) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+  for (let pass = 0; pass < 6; pass++) {
+    const down = pass % 2 === 0, seq = down ? depths : [...depths].reverse();
+    for (const d of seq) {
+      const nbPos = (id) => { const nb = (down ? parents[id] : kids[id]).filter((p) => layer[p] === d + (down ? -1 : 1)); return nb.length ? median(nb.map((p) => pos[p])) : pos[id]; };
+      layers[d].sort((a, b) => nbPos(a) - nbPos(b)); layers[d].forEach((id, i) => (pos[id] = i));
+    }
+  }
+  // x-coordinate alignment: pull each node toward the median x of its neighbours, resolve overlaps in order
+  const COL = 210, ROW = 150, x = {}; depths.forEach((d) => layers[d].forEach((id, i) => (x[id] = i * COL)));
+  for (let pass = 0; pass < 10; pass++) {
+    const down = pass % 2 === 0, seq = down ? depths : [...depths].reverse();
+    for (const d of seq) {
+      const arr = layers[d];
+      for (const id of arr) { const nb = down ? parents[id] : kids[id]; const xs = (nb.length ? nb : [...parents[id], ...kids[id]]).map((p) => x[p]); const m = median(xs); if (m != null) x[id] = m; }
+      for (let i = 1; i < arr.length; i++) { const min = x[arr[i - 1]] + COL; if (x[arr[i]] < min) x[arr[i]] = min; }
+      for (let i = arr.length - 2; i >= 0; i--) { const max = x[arr[i + 1]] - COL; if (x[arr[i]] > max) x[arr[i]] = max; }
+    }
+  }
+  const minX = Math.min(...nodes.map((n) => x[n.id]));
+  nodes.forEach((n) => { const d = layer[n.id]; n._d = d; n._c = (x[n.id] - minX) / COL; n.x = Math.round(x[n.id] - minX + 40); n.y = Math.round(d * ROW + 40); });
+  // number process/step in BFS order from the roots
+  let seq = 1; const bseen = new Set(), bq = nodes.filter((n) => indeg[n.id] === 0).map((n) => n.id);
+  while (bq.length) { const id = bq.shift(); if (bseen.has(id)) continue; bseen.add(id); const n = byId[id]; if (n && (n.type === "process" || n.type === "step")) n.seq = seq++; (kids[id] || []).forEach((c) => bq.push(c)); }
   return g;
 }
 const fillOf = (s) => (String(s).match(/fillColor=(#[0-9a-fA-F]{6}|none)/) || [])[1] || "#ffff00";
+// Find maximal runs of non-branching steps (a chain: each step has one way in and one way out,
+// none are start/end/decision). These can be folded into one block without changing the flow.
+const MIN_CHAIN = 3;
+function linearChains(graph) {
+  const kids = {}, indeg = {}, outdeg = {}, parent = {};
+  graph.nodes.forEach((n) => { kids[n.id] = []; indeg[n.id] = 0; outdeg[n.id] = 0; });
+  graph.edges.forEach((e) => { if (kids[e.from] !== undefined && indeg[e.to] !== undefined) { kids[e.from].push(e.to); outdeg[e.from]++; indeg[e.to]++; parent[e.to] = e.from; } });
+  const byId = Object.fromEntries(graph.nodes.map((n) => [n.id, n]));
+  const ok = (id) => { const n = byId[id]; return n && n.type !== "start" && n.type !== "end" && n.type !== "decision"; };
+  const seen = new Set(), chains = [];
+  for (const nn of graph.nodes) {
+    const id = nn.id; if (seen.has(id) || !ok(id)) continue;
+    let head = true; if (indeg[id] === 1) { const p = parent[id]; if (p && ok(p) && outdeg[p] === 1) head = false; }
+    if (!head) continue;
+    const chain = [id]; seen.add(id); let cur = id;
+    while (outdeg[cur] === 1) { const nx = kids[cur][0]; if (ok(nx) && indeg[nx] === 1 && !seen.has(nx)) { chain.push(nx); seen.add(nx); cur = nx; } else break; }
+    if (chain.length >= MIN_CHAIN) chains.push(chain);
+  }
+  return chains;
+}
+// Build a view graph where each collapsed chain is one "group" node; edges re-point to the group.
+function buildDisplayGraph(graph, chains, collapsed) {
+  const byId = Object.fromEntries(graph.nodes.map((n) => [n.id, n]));
+  const headOf = {}, chainByHead = {};
+  chains.forEach((ch) => { chainByHead[ch[0]] = ch; if (collapsed.has(ch[0])) ch.forEach((id) => (headOf[id] = ch[0])); });
+  const disp = (id) => (headOf[id] ? "grp:" + headOf[id] : id);
+  const nodes = [], doneGrp = new Set();
+  for (const n of graph.nodes) {
+    if (headOf[n.id]) { const h = headOf[n.id]; if (doneGrp.has(h)) continue; doneGrp.add(h); const ch = chainByHead[h]; nodes.push({ id: "grp:" + h, type: "group", members: ch.slice(), count: ch.length, label: byId[ch[0]].label, lastLabel: byId[ch[ch.length - 1]].label }); }
+    else nodes.push({ ...n });
+  }
+  const seenE = new Set(), edges = [];
+  for (const e of graph.edges) {
+    const a = disp(e.from), b = disp(e.to); if (a === b) continue;
+    const key = a + ">" + b + ">" + (e.label || ""); if (seenE.has(key)) continue; seenE.add(key);
+    edges.push({ from: a, to: b, label: e.label || "", rfrom: e.from, rto: e.to });
+  }
+  return { nodes, edges };
+}
+// Nodes dominated by D: reachable from D and NOT reachable from any root without passing through D.
+// (So a step that also rejoins the flow elsewhere via a merge is NOT swallowed.)
+function dominatedBy(graph, D) {
+  const roots = graph.nodes.filter((n) => n.type === "start" || !graph.edges.some((e) => e.to === n.id)).map((n) => n.id);
+  const without = new Set(), st = roots.filter((r) => r !== D);
+  while (st.length) { const x = st.pop(); if (without.has(x) || x === D) continue; without.add(x); graph.edges.forEach((e) => { if (e.from === x && e.to !== D) st.push(e.to); }); }
+  const fromD = new Set(), st2 = []; graph.edges.forEach((e) => { if (e.from === D) st2.push(e.to); });
+  while (st2.length) { const x = st2.pop(); if (fromD.has(x)) continue; fromD.add(x); graph.edges.forEach((e) => { if (e.from === x) st2.push(e.to); }); }
+  return [...fromD].filter((v) => v !== D && !without.has(v));
+}
+// Build a view graph from a list of collapse groups ({ id, members, label, count, kind }).
+function buildGroupGraph(graph, groups) {
+  const memberToGroup = {}, byGroup = {};
+  groups.forEach((gp) => { byGroup[gp.id] = gp; gp.members.forEach((id) => { if (!memberToGroup[id]) memberToGroup[id] = gp.id; }); });
+  const disp = (id) => memberToGroup[id] || id;
+  const nodes = [], done = new Set();
+  for (const n of graph.nodes) {
+    const gid = memberToGroup[n.id];
+    if (gid) { if (done.has(gid)) continue; done.add(gid); const gp = byGroup[gid]; nodes.push({ id: gid, type: "group", kind: gp.kind, members: gp.members.slice(), count: gp.count, label: gp.label }); }
+    else nodes.push({ ...n });
+  }
+  const seenE = new Set(), edges = [];
+  for (const e of graph.edges) {
+    const a = disp(e.from), b = disp(e.to); if (a === b) continue;
+    const key = a + ">" + b + ">" + (e.label || ""); if (seenE.has(key)) continue; seenE.add(key);
+    edges.push({ from: a, to: b, label: e.label || "", rfrom: e.from, rto: e.to });
+  }
+  return { nodes, edges };
+}
 function styleFor(type) {
   switch (type) {
     case "information": return PROFILE.process.style;                 // yellow box
@@ -225,15 +374,33 @@ function styleFor(type) {
 }
 const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const wrapLabel = (t) => esc(`<div style="font-size: 1px"><font style="font-size:15.52px;font-family:Arial;color:#000000;line-height:120%">${t}</font></div>`);
+// size a node box to fit its label: cap the width and grow height as the text wraps
+function sizeFor(n) {
+  const label = String(n.label || "");
+  if (n.type === "start" || n.type === "end") return [Math.min(300, Math.max(150, label.length * 8 + 44)), 56];
+  const diamond = n.type === "decision" || n.type === "manual";
+  const w = diamond ? 210 : 240;
+  const perLine = Math.max(6, Math.floor((diamond ? w * 0.5 : w - 28) / 7.6));
+  let lines = 0;
+  for (const seg of label.split(/\n/)) lines += Math.max(1, Math.ceil((seg.length || 1) / perLine));
+  const h = Math.max(diamond ? 104 : 60, lines * 19 + (diamond ? 62 : 30));
+  return [w, h];
+}
 function toDrawio(graph) {
   const g = layoutFlow(JSON.parse(JSON.stringify(graph)));
-  const W = Math.max(0, ...g.nodes.map((n) => n.x)) + 300, H = Math.max(0, ...g.nodes.map((n) => n.y)) + 200;
+  // size every node to its content, then re-space rows/columns so nothing overlaps
+  g.nodes.forEach((n) => { const [w, h] = sizeFor(n); n._w = w; n._h = h; });
+  const colUnit = Math.max(200, ...g.nodes.map((n) => n._w)) + 60;
+  const depths = [...new Set(g.nodes.map((n) => n._d || 0))].sort((a, b) => a - b);
+  const rowH = {}; depths.forEach((d) => { rowH[d] = Math.max(...g.nodes.filter((n) => (n._d || 0) === d).map((n) => n._h)); });
+  const rowY = {}; let acc = 40; depths.forEach((d) => { rowY[d] = acc; acc += rowH[d] + 60; });
+  g.nodes.forEach((n) => { n.x = Math.round((n._c || 0) * colUnit + 40); n.y = Math.round(rowY[n._d || 0] + (rowH[n._d || 0] - n._h) / 2); });
+  const W = Math.max(0, ...g.nodes.map((n) => n.x + n._w)) + 80, H = acc + 80;
   let cells = `<mxCell id="0"/><mxCell id="1" parent="0"/>`;
   cells += `<mxCell id="bg" value="" style="fillColor=#ffffff;strokeColor=none;pointerEvents=0;" vertex="1" parent="1"><mxGeometry x="-40" y="-40" width="${W + 80}" height="${H + 80}" as="geometry"/></mxCell>`;
   const badge = PROFILE.numberBadgeYellow ? PROFILE.numberBadgeYellow.style : PROFILE.process.style;
   for (const n of g.nodes) {
-    const dim = n.type === "decision" || n.type === "manual" ? [170, 110] : n.type === "start" || n.type === "end" ? [150, 54] : [200, 80];
-    cells += `<mxCell id="n${esc(n.id)}" value="${wrapLabel(n.label)}" style="${styleFor(n.type)}" vertex="1" parent="1"><mxGeometry x="${n.x}" y="${n.y}" width="${dim[0]}" height="${dim[1]}" as="geometry"/></mxCell>`;
+    cells += `<mxCell id="n${esc(n.id)}" value="${wrapLabel(n.label)}" style="${styleFor(n.type)}" vertex="1" parent="1"><mxGeometry x="${n.x}" y="${n.y}" width="${n._w}" height="${n._h}" as="geometry"/></mxCell>`;
     if (n.seq != null) {
       const bs = badge.replace(/fillColor=(#[0-9a-fA-F]{6}|none)/, "fillColor=" + fillOf(styleFor(n.type)));
       cells += `<mxCell id="b${esc(n.id)}" value="${wrapLabel(n.seq)}" style="${bs}" vertex="1" parent="1"><mxGeometry x="${n.x}" y="${n.y}" width="52" height="28" as="geometry"/></mxCell>`;
@@ -248,21 +415,123 @@ function download(name, text, type) {
   const b = new Blob([text], { type }); const u = URL.createObjectURL(b);
   const a = document.createElement("a"); a.href = u; a.download = name; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(u);
 }
+// Orthogonal elbow connector: down from source, across in the row-gap, down into target — so
+// lines run between the boxes instead of slicing under them. Corners are rounded.
+function orthPath(x1, y1, x2, y2, r = 9) {
+  if (Math.abs(x1 - x2) < 1) return `M ${x1} ${y1} L ${x2} ${y2}`;
+  const ym = (y1 + y2) / 2, dir = x2 > x1 ? 1 : -1;
+  r = Math.max(0, Math.min(r, Math.abs(x2 - x1) / 2, Math.abs(ym - y1), Math.abs(y2 - ym)));
+  return `M ${x1} ${y1} L ${x1} ${ym - r} Q ${x1} ${ym} ${x1 + dir * r} ${ym} L ${x2 - dir * r} ${ym} Q ${x2} ${ym} ${x2} ${ym + r} L ${x2} ${y2}`;
+}
 function wrapSvg(text, max) {
   const words = String(text).split(" "); const lines = []; let cur = "";
   for (const w of words) { if ((cur + " " + w).trim().length > max) { if (cur) lines.push(cur); cur = w; } else cur = (cur + " " + w).trim(); }
   if (cur) lines.push(cur); return lines.slice(0, 3);
 }
 // whole-flow flowchart (all branches) — the "expand" view; click a node to select it
-function FullFlowSvg({ graph, cursor, onSelect, onEdgeInsert }) {
-  const g = React.useMemo(() => layoutFlow(JSON.parse(JSON.stringify(graph))), [graph]);
+function FullFlowSvg({ graph, cursor, onSelect, onEdgeInsert, fitKey, revealKey }) {
+  const chains = React.useMemo(() => linearChains(graph), [graph]);
+  const chainHeads = React.useMemo(() => new Set(chains.map((c) => c[0])), [chains]);
+  const decisionIds = React.useMemo(() => new Set(graph.nodes.filter((n) => n.type === "decision").map((n) => n.id)), [graph]);
+  const [collapsed, setCollapsed] = React.useState(() => new Set());
+  const [collapsedDec, setCollapsedDec] = React.useState(() => new Set());
+  // open collapsed from the top (like the mind map): all decisions folded, drill down by expanding
+  React.useEffect(() => { setCollapsed(new Set(chainHeads)); setCollapsedDec(new Set(decisionIds)); }, [fitKey]);
+  React.useEffect(() => { setCollapsed((prev) => { const s = new Set(); prev.forEach((h) => chainHeads.has(h) && s.add(h)); return s; }); setCollapsedDec((prev) => { const s = new Set(); prev.forEach((d) => decisionIds.has(d) && s.add(d)); return s; }); }, [chainHeads, decisionIds]);
+  const groups = React.useMemo(() => {
+    const byId = Object.fromEntries(graph.nodes.map((n) => [n.id, n]));
+    const assigned = new Set(), list = [];
+    // decision subtrees first (largest first so an outer decision swallows inner ones)
+    const subs = [...collapsedDec].map((D) => ({ D, dom: dominatedBy(graph, D) })).filter((x) => x.dom.length > 0).sort((a, b) => b.dom.length - a.dom.length);
+    for (const { D, dom } of subs) {
+      const members = dom.filter((id) => !assigned.has(id)); if (!members.length) continue;
+      members.forEach((id) => assigned.add(id));
+      list.push({ id: "sub:" + D, kind: "sub", members, count: members.length, label: (byId[D] && byId[D].label) || "branch" });
+    }
+    // linear chains on remaining nodes
+    for (const ch of chains) {
+      if (!collapsed.has(ch[0])) continue;
+      const members = ch.filter((id) => !assigned.has(id)); if (members.length < 2) continue;
+      members.forEach((id) => assigned.add(id));
+      list.push({ id: "grp:" + ch[0], kind: "chain", members, count: members.length, label: (byId[members[0]] && byId[members[0]].label) || "steps" });
+    }
+    return list;
+  }, [graph, chains, collapsed, collapsedDec]);
+  const display = React.useMemo(() => buildGroupGraph(graph, groups), [graph, groups]);
+  const g = React.useMemo(() => layoutFlow(JSON.parse(JSON.stringify(display))), [display]);
+  const expandAllChains = () => { setCollapsed(new Set()); setCollapsedDec(new Set()); };
+  const collapseAllChains = () => { setCollapsed(new Set(chainHeads)); setCollapsedDec(new Set(decisionIds)); };
+  const allCollapsed = decisionIds.size > 0 && collapsedDec.size >= decisionIds.size;
+  const collapseDecision = (id) => setCollapsedDec((prev) => new Set(prev).add(id));
+  const expandGroup = (gid) => {
+    if (gid.startsWith("sub:")) { const D = gid.slice(4); setCollapsedDec((prev) => { const s = new Set(prev); s.delete(D); return s; }); }
+    else { const h = gid.slice(4); setCollapsed((prev) => { const s = new Set(prev); s.delete(h); return s; }); }
+  };
   const shared = React.useMemo(() => { const s = new Set(); graph.nodes.forEach((n) => { if (n.refId) { s.add(n.refId); s.add(n.id); } }); return s; }, [graph]);
   const byId = Object.fromEntries(g.nodes.map((n) => [n.id, n]));
-  const dim = (t) => (t === "decision" || t === "manual" ? [158, 92] : t === "start" || t === "end" ? [150, 46] : [188, 56]);
+  const dim = (t) => (t === "decision" || t === "manual" ? [158, 92] : t === "start" || t === "end" ? [150, 46] : t === "group" ? [190, 62] : [188, 56]);
   const W = Math.max(0, ...g.nodes.map((n) => n.x)) + 260;
   const H = Math.max(0, ...g.nodes.map((n) => n.y)) + 150;
+  const svgRef = React.useRef(null);
+  const drag = React.useRef(null);
+  const [t, setT] = React.useState({ x: 20, y: 20, k: 0.6 });
+  const [q, setQ] = React.useState("");
+  const centerOn = React.useCallback((n) => { const el = svgRef.current; if (!n || !el) return; const r = el.getBoundingClientRect(); setT((p) => ({ ...p, x: r.width / 2 - (n.x + 94) * p.k, y: r.height / 2 - (n.y + 28) * p.k })); }, []);
+  const fit = React.useCallback(() => {
+    const el = svgRef.current; if (!el) return;
+    const r = el.getBoundingClientRect();
+    const k = Math.min(2, Math.max(0.08, Math.min((r.width - 40) / W, (r.height - 40) / H)));
+    setT({ k, x: (r.width - W * k) / 2, y: 20 });
+  }, [W, H]);
+  const fitRef = React.useRef(fit);
+  fitRef.current = fit;
+  React.useEffect(() => { fitRef.current(); }, [fitKey]);
+  // pan (keeping zoom) to bring the current cursor node into the centre of view
+  const revRef = React.useRef({ byId, cursor });
+  revRef.current = { byId, cursor };
+  React.useEffect(() => { if (!revealKey) return; const { byId: b, cursor: cur } = revRef.current; centerOn(b[cur]); }, [revealKey, centerOn]);
+  const ql = q.trim().toLowerCase();
+  const matches = ql ? g.nodes.filter((n) => (n.type === "group" ? n.members.some((mid) => String((graph.nodes.find((x) => x.id === mid) || {}).label || "").toLowerCase().includes(ql)) : String(n.label || "").toLowerCase().includes(ql))).slice(0, 12) : [];
+  const matchSet = new Set(matches.map((n) => n.id));
+  const gotoMatch = (n) => { onSelect(n.type === "group" ? n.members[0] : n.id); centerOn(n); };
+  const zoomBy = (f) => setT((p) => { const el = svgRef.current; const r = el ? el.getBoundingClientRect() : { width: 800, height: 600 }; const mx = r.width / 2, my = r.height / 2; const k2 = Math.min(2.2, Math.max(0.08, p.k * f)); return { k: k2, x: mx - ((mx - p.x) / p.k) * k2, y: my - ((my - p.y) / p.k) * k2 }; });
+  const onWheel = (e) => { e.preventDefault(); const r = svgRef.current.getBoundingClientRect(); const mx = e.clientX - r.left, my = e.clientY - r.top; const k2 = Math.min(2.2, Math.max(0.08, t.k * (e.deltaY < 0 ? 1.12 : 0.89))); setT({ k: k2, x: mx - ((mx - t.x) / t.k) * k2, y: my - ((my - t.y) / t.k) * k2 }); };
+  const onDown = (e) => { e.preventDefault(); drag.current = { x: e.clientX, y: e.clientY, tx: t.x, ty: t.y, moved: false }; };
+  const onMove = (e) => { if (!drag.current) return; drag.current.moved = true; setT((p) => ({ ...p, x: drag.current.tx + (e.clientX - drag.current.x), y: drag.current.ty + (e.clientY - drag.current.y) })); };
+  const onUp = () => (drag.current = null);
+  const zbtn = { ...sans, width: 30, height: 30, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 16, color: T.inkSoft, background: T.panel, border: `1px solid ${T.line}`, borderRadius: 8, cursor: "pointer" };
   return (
-    <svg width={W} height={H} style={{ display: "block", margin: "0 auto" }}>
+    <div style={{ position: "absolute", inset: 0, overflow: "hidden", background: "#FCFBF8", userSelect: "none", WebkitUserSelect: "none" }}>
+      <div style={{ position: "absolute", top: 12, left: 14, zIndex: 3, width: 250 }}>
+        <input value={q} onChange={(e) => setQ(e.target.value)} spellCheck={false} placeholder="Search steps…"
+          style={{ ...sans, width: "100%", boxSizing: "border-box", fontSize: 12.5, color: T.ink, background: "#fff", border: `1px solid ${T.line}`, borderRadius: 8, padding: "7px 10px", outline: "none", boxShadow: "0 1px 4px rgba(0,0,0,0.06)" }} />
+        {q.trim() && (
+          <div style={{ marginTop: 4, background: "#fff", border: `1px solid ${T.line}`, borderRadius: 8, boxShadow: "0 4px 14px rgba(0,0,0,0.1)", maxHeight: 260, overflow: "auto" }}>
+            {matches.length === 0 && <div style={{ ...sans, fontSize: 12, color: T.textDim, padding: "8px 10px" }}>No matching steps.</div>}
+            {matches.map((n) => (
+              <button key={n.id} onClick={() => gotoMatch(n)} title="Jump to this step"
+                style={{ ...sans, display: "flex", alignItems: "center", gap: 7, width: "100%", textAlign: "left", cursor: "pointer", background: "transparent", border: "none", borderBottom: `1px solid ${T.paper}`, padding: "7px 9px", fontSize: 12, color: T.ink }}>
+                <span style={{ width: 8, height: 8, borderRadius: 2, background: (NT[n.type] || NT.step).bd, flexShrink: 0 }} />
+                <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{trunc(n.label, 40)}</span>
+                {n.seq != null && <span style={{ ...mono, fontSize: 9.5, color: T.textDim }}>#{n.seq}</span>}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      <div style={{ position: "absolute", top: 12, right: 16, zIndex: 2, display: "flex", gap: 6 }}>
+        {(chains.length > 0 || decisionIds.size > 0) && (allCollapsed
+          ? <button style={{ ...zbtn, width: "auto", padding: "0 10px", gap: 6, fontSize: 12.5 }} onClick={expandAllChains} title="Expand the whole flow">Expand all</button>
+          : <button style={{ ...zbtn, width: "auto", padding: "0 10px", gap: 6, fontSize: 12.5 }} onClick={collapseAllChains} title="Collapse to the top level (drill down by expanding)">Collapse all</button>)}
+        <button style={zbtn} onClick={() => zoomBy(1.2)} title="Zoom in">+</button>
+        <button style={zbtn} onClick={() => zoomBy(0.83)} title="Zoom out">−</button>
+        <button style={{ ...zbtn, width: "auto", padding: "0 10px", gap: 6, fontSize: 12.5 }} onClick={fit} title="Fit to screen"><Maximize2 size={13} /> Fit</button>
+      </div>
+      <div style={{ position: "absolute", bottom: 10, left: 14, zIndex: 2, ...mono, fontSize: 11, color: T.textDim }}>scroll to zoom · drag to pan · {Math.round(t.k * 100)}%</div>
+      <svg ref={svgRef} width="100%" height="100%" onWheel={onWheel} onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp}
+        draggable={false} onDragStart={(e) => e.preventDefault()}
+        style={{ display: "block", cursor: drag.current ? "grabbing" : "grab", userSelect: "none", WebkitUserSelect: "none", MozUserSelect: "none", touchAction: "none" }}>
+      <g transform={`translate(${t.x},${t.y}) scale(${t.k})`}>
       <defs><marker id="fa" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#9a958a" /></marker></defs>
       {g.edges.map((e, i) => {
         const s = byId[e.from], t = byId[e.to]; if (!s || !t) return null;
@@ -270,10 +539,10 @@ function FullFlowSvg({ graph, cursor, onSelect, onEdgeInsert }) {
         const x1 = s.x + sw / 2, y1 = s.y + sh, x2 = t.x + tw / 2, y2 = t.y, my = (y1 + y2) / 2, mx = (x1 + x2) / 2;
         return (
           <g key={i}>
-            <path d={`M ${x1} ${y1} C ${x1} ${my}, ${x2} ${my}, ${x2} ${y2}`} fill="none" stroke="#B9B4A7" strokeWidth="1.4" markerEnd="url(#fa)" />
+            <path d={orthPath(x1, y1, x2, y2)} fill="none" stroke="#B9B4A7" strokeWidth="1.4" markerEnd="url(#fa)" />
             {e.label && <text x={mx + 10} y={my - 3} fontSize="10.5" fill="#0e86b8" style={mono}>{e.label}</text>}
-            {onEdgeInsert && (
-              <g onClick={(ev) => { ev.stopPropagation(); onEdgeInsert(e.from, e.to, e.label); }} style={{ cursor: "pointer" }}>
+            {onEdgeInsert && s.type !== "group" && t.type !== "group" && (
+              <g onClick={(ev) => { ev.stopPropagation(); onEdgeInsert(e.rfrom || e.from, e.rto || e.to, e.label); }} style={{ cursor: "pointer" }}>
                 <circle cx={mx} cy={my} r="8" fill="#fff" stroke="#c9a24a" strokeWidth="1.3" />
                 <line x1={mx - 4} y1={my} x2={mx + 4} y2={my} stroke="#8a5a1e" strokeWidth="1.5" />
                 <line x1={mx} y1={my - 4} x2={mx} y2={my + 4} stroke="#8a5a1e" strokeWidth="1.5" />
@@ -286,20 +555,45 @@ function FullFlowSvg({ graph, cursor, onSelect, onEdgeInsert }) {
       {g.nodes.map((n) => {
         const [w, h] = dim(n.type); const c = FILL[n.type] || "#888"; const meta = NT[n.type] || NT.step; const sel = n.id === cursor;
         const cx = n.x + w / 2, cy = n.y + h / 2; const diamond = n.type === "decision" || n.type === "manual";
+        const hit = matchSet.has(n.id); const stroke = sel ? T.amber : hit ? "#ff6a00" : c; const sw = sel ? 2.5 : hit ? 4 : 1.5;
+        if (n.type === "group") {
+          return (
+            <g key={n.id} onClick={() => { if (!drag.current || !drag.current.moved) expandGroup(n.id); }} style={{ cursor: "pointer" }} title="Click to expand these steps">
+              {hit && <rect x={n.x - 5} y={n.y - 5} width={w + 10} height={h + 10} rx={12} fill="none" stroke="#ffd21a" strokeWidth="9" opacity="0.75" />}
+              <rect x={n.x + 4} y={n.y + 5} width={w} height={h} rx={9} fill="#ece7db" stroke="#c7bfad" />
+              <rect x={n.x + 2} y={n.y + 3} width={w} height={h} rx={9} fill="#f1ece0" stroke="#c2baa6" />
+              <rect x={n.x} y={n.y} width={w} height={h} rx={9} fill={hit ? "#fff2b0" : "#f7f3ea"} stroke={hit ? "#ff6a00" : "#b0a892"} strokeWidth={hit ? 3 : 1.5} strokeDasharray="5 3" />
+              <text x={cx} y={cy - 7} textAnchor="middle" fontSize="12" fontWeight="700" fill="#5f5744" style={sans}>▸ {n.count} {n.kind === "sub" ? "steps ⑂" : "steps"}</text>
+              <text x={cx} y={cy + 9} textAnchor="middle" fontSize="9.5" fill="#8a8272" style={sans}>{n.kind === "sub" ? "after this decision" : trunc(n.label, 24) + " …"}</text>
+            </g>
+          );
+        }
         return (
-          <g key={n.id} onClick={() => onSelect(n.id)} style={{ cursor: "pointer" }}>
+          <g key={n.id} onClick={() => { if (!drag.current || !drag.current.moved) onSelect(n.id); }} style={{ cursor: "pointer" }}>
+            {hit && (diamond
+              ? <polygon points={`${cx},${n.y - 6} ${n.x + w + 6},${cy} ${cx},${n.y + h + 6} ${n.x - 6},${cy}`} fill="none" stroke="#ffd21a" strokeWidth="9" opacity="0.75" />
+              : <rect x={n.x - 5} y={n.y - 5} width={w + 10} height={h + 10} rx={n.type === "start" || n.type === "end" ? (h + 10) / 2 : 11} fill="none" stroke="#ffd21a" strokeWidth="9" opacity="0.75" />)}
             {diamond
-              ? <polygon points={`${cx},${n.y} ${n.x + w},${cy} ${cx},${n.y + h} ${n.x},${cy}`} fill={meta.bg} stroke={sel ? T.amber : c} strokeWidth={sel ? 2.5 : 1.5} />
-              : <rect x={n.x} y={n.y} width={w} height={h} rx={n.type === "start" || n.type === "end" ? h / 2 : 8} fill={meta.bg} stroke={sel ? T.amber : c} strokeWidth={sel ? 2.5 : 1.5} />}
+              ? <polygon points={`${cx},${n.y} ${n.x + w},${cy} ${cx},${n.y + h} ${n.x},${cy}`} fill={hit ? "#fff2b0" : meta.bg} stroke={stroke} strokeWidth={sw} />
+              : <rect x={n.x} y={n.y} width={w} height={h} rx={n.type === "start" || n.type === "end" ? h / 2 : 8} fill={hit ? "#fff2b0" : meta.bg} stroke={stroke} strokeWidth={sw} />}
             <text x={cx} y={cy} textAnchor="middle" dominantBaseline="middle" fontSize="11" fill={meta.fg} style={sans}>
               {wrapSvg(n.label, diamond ? 15 : 24).map((ln, i, a) => <tspan key={i} x={cx} dy={i === 0 ? -(a.length - 1) * 6 : 12}>{ln}</tspan>)}
             </text>
             {n.seq != null && <text x={n.x + 5} y={n.y + 11} fontSize="9" fontWeight="700" fill={c} style={mono}>{n.seq}</text>}
             {shared.has(n.id) && <text x={n.x + w - 7} y={n.y + 12} textAnchor="end" fontSize="10" fill={c} style={sans}>🔗</text>}
+            {n.type === "decision" && (
+              <g onClick={(ev) => { ev.stopPropagation(); collapseDecision(n.id); }} style={{ cursor: "pointer" }}>
+                <title>Collapse everything after this decision</title>
+                <circle cx={n.x + w - 2} cy={cy} r="9" fill="#fff" stroke="#b85450" strokeWidth="1.4" />
+                <line x1={n.x + w - 6} y1={cy} x2={n.x + w + 2} y2={cy} stroke="#b85450" strokeWidth="1.6" />
+              </g>
+            )}
           </g>
         );
       })}
+      </g>
     </svg>
+    </div>
   );
 }
 
@@ -666,23 +960,21 @@ export default function GuidedBuilder({ onRegister }) {
   const [newLabel, setNewLabel] = useState("");
   const [newBranches, setNewBranches] = useState("Yes, No");
   const [newBranchName, setNewBranchName] = useState("");
+  const [showPick, setShowPick] = useState(false);
+  const [pickQuery, setPickQuery] = useState("");
   const [collapsed, setCollapsed] = useState(false);
   const [copied, setCopied] = useState(false);
   const [view, setView] = useState("build"); // build | mindmap | paths | drawio
   const [fullFlow, setFullFlow] = useState(false); // focused path vs whole flow
+  const [fitKey, setFitKey] = useState(0); // bump to re-fit the full-flow view (import/open/new)
+  const [revealKey, setRevealKey] = useState(0); // bump to pan the full-flow view to the cursor node
+  const revealNode = (id) => { setCursor(id); setPendingBranch(null); setRevealKey((k) => k + 1); };
   const [pathResult, setPathResult] = useState(null);
   const [selPath, setSelPath] = useState(null);
   const [pathsBusy, setPathsBusy] = useState(false);
   const [pathQuery, setPathQuery] = useState("");
   const [edits, setEdits] = useState({});
   const [drawioUrl, setDrawioUrl] = useState("https://embed.diagrams.net/");
-  const [branchToRemove, setBranchToRemove] = useState(null);
-  const [showPick, setShowPick] = useState(false);
-  const [pickQuery, setPickQuery] = useState("");
-  const [importing, setImporting] = useState(false);
-  const [importErr, setImportErr] = useState("");
-  const vsdxRef = useRef(null);
-  const jsonRef = useRef(null);
 
   const stateRef = useRef();
   stateRef.current = { flowName, graph, cursor, pendingBranch, newType, newLabel, newBranches, newBranchName, view, fullFlow };
@@ -720,6 +1012,7 @@ export default function GuidedBuilder({ onRegister }) {
     }
   }, [onRegister]);
 
+
   const byId = useMemo(() => Object.fromEntries(graph.nodes.map((n) => [n.id, n])), [graph]);
   const chain = useMemo(() => pathTo(graph, cursor), [graph, cursor]);
   const open = useMemo(() => openBranches(graph), [graph]);
@@ -732,8 +1025,26 @@ export default function GuidedBuilder({ onRegister }) {
   const xml = useMemo(() => toDrawio(graph), [graph]);
   const applyEdits = () => {
     if (!Object.keys(edits).length) return;
-    setGraph((g) => ({ ...g, nodes: g.nodes.map((n) => { const e = edits[n.id]; return e ? { ...n, label: e.label != null ? e.label : n.label, type: e.type != null ? e.type : n.type } : n; }) }));
+    setGraph((g) => ({ ...g, nodes: g.nodes.map((n) => {
+      const e = edits[n.id]; if (!e) return n;
+      let nn = e.type != null && e.type !== n.type ? retypeNode(n, e.type, g.edges) : n;
+      if (e.label != null) nn = { ...nn, label: e.label };
+      return nn;
+    }) }));
     setEdits({}); setSelPath(null);
+  };
+  // switch views, flushing any pending Paths edits into the graph so Build/Paths stay in sync
+  const changeView = (k) => { if (view === "paths" && Object.keys(edits).length) applyEdits(); setView(k); };
+  // insert a step between two nodes from the Paths tab — flushes pending label edits in the same update
+  const pathInsert = (fromId, toId, label = "") => {
+    const id = uid();
+    setGraph((g) => {
+      let nodes = g.nodes.map((n) => { const e = edits[n.id]; return e ? { ...n, label: e.label != null ? e.label : n.label, type: e.type != null ? e.type : n.type } : n; });
+      nodes = [...nodes, { id, label: "New step", type: "process" }];
+      const edges = [...g.edges.filter((e) => !(e.from === fromId && e.to === toId)), { from: fromId, to: id, label: label || "" }, { from: id, to: toId, label: "" }];
+      return { ...g, nodes, edges };
+    });
+    setEdits({}); // keep the path selected so the new step is visible in place
   };
   // remove a step from the Paths tab — bridges parent(s) to child(ren) so the flow stays connected
   const pathRemove = (nodeId) => {
@@ -752,20 +1063,6 @@ export default function GuidedBuilder({ onRegister }) {
     });
     setEdits({});
   };
-  // switch views, flushing any pending Paths edits into the graph so Build/Paths stay in sync
-  const changeView = (k) => { if (view === "paths" && Object.keys(edits).length) applyEdits(); setView(k); };
-  // insert a step between two nodes from the Paths tab — flushes pending label edits in the same update
-  const pathInsert = (fromId, toId, label = "") => {
-    const id = uid();
-    setGraph((g) => {
-      let nodes = g.nodes.map((n) => { const e = edits[n.id]; return e ? { ...n, label: e.label != null ? e.label : n.label, type: e.type != null ? e.type : n.type } : n; });
-      nodes = [...nodes, { id, label: "New step", type: "process" }];
-      const edges = [...g.edges.filter((e) => !(e.from === fromId && e.to === toId)), { from: fromId, to: id, label: label || "" }, { from: id, to: toId, label: "" }];
-      return { ...g, nodes, edges };
-    });
-    setEdits({}); // keep the path selected so the new step is visible in place
-  };
-  // append a new step to the end of a path (before its end node, or after a dangling tip)
   const pathAppend = (p) => {
     const lastId = p.nodes[p.nodes.length - 1];
     const lastNode = graph.nodes.find((n) => n.id === lastId);
@@ -822,97 +1119,68 @@ export default function GuidedBuilder({ onRegister }) {
     setGraph((g) => ({ ...g, nodes: [...g.nodes, { id, type: "information", label: master.label, refId: masterId }], edges: [...g.edges, { from: cursor, to: id, label: pendingBranch || "" }] }));
     setCursor(id); setPendingBranch(null); setNewLabel("");
   };
-  const removeBranchResolved = (branchLabel, mode = "keep") => {
+  const updateType = (id, type) => setGraph((g) => ({ ...g, nodes: g.nodes.map((n) => (n.id === id ? retypeNode(n, type, g.edges) : n)) }));
+  // converting a branched decision to a single-path type is ambiguous — prompt with a resolver
+  const [convertTo, setConvertTo] = useState(null);   // target type awaiting resolution
+  const [keepBranch, setKeepBranch] = useState("");
+  const requestType = (id, type) => {
+    const n = byId[id];
+    const kids = childEdges(graph, id);
+    if (n && n.type === "decision" && type !== "decision" && kids.length > 0) {
+      setConvertTo(type);
+      setKeepBranch(kids[0].label || (n.branches && n.branches[0]) || "");
+    } else {
+      updateType(id, type);
+    }
+  };
+  const cancelConvert = () => setConvertTo(null);
+  useEffect(() => { setConvertTo(null); setBranchToRemove(null); }, [cursor]);
+  // remove a decision branch, optionally deleting the steps that follow it
+  const [branchToRemove, setBranchToRemove] = useState(null);
+  const removeBranchResolved = (label, mode) => {
     setGraph((g) => {
-      const decNode = g.nodes.find((n) => n.id === cursor);
-      if (!decNode || decNode.type !== "decision") return g;
-      const updatedBranches = (decNode.branches || []).filter((b) => b !== branchLabel);
-      const edgeToRemove = g.edges.find((e) => e.from === cursor && e.label === branchLabel);
-      let newEdges = g.edges.filter((e) => !(e.from === cursor && e.label === branchLabel));
-      let newNodes = g.nodes.map((n) => (n.id === cursor ? { ...n, branches: updatedBranches } : n));
-      if (mode === "delete" && edgeToRemove) {
-        const startId = edgeToRemove.to;
-        const reachableFromOthers = new Set();
-        const search = (id) => {
-          if (reachableFromOthers.has(id)) return;
-          reachableFromOthers.add(id);
-          g.edges.filter((e) => e.from === id).forEach((e) => search(e.to));
-        };
-        g.nodes.forEach((n) => {
-          if (n.id === cursor) return;
-          g.edges.filter((e) => e.from === n.id).forEach((e) => search(e.to));
-        });
-        g.edges.filter((e) => e.from === "start").forEach((e) => search(e.to));
-        search("start");
-        const toPurge = new Set();
-        const purgeDfs = (id) => {
-          if (reachableFromOthers.has(id) || toPurge.has(id)) return;
-          toPurge.add(id);
-          g.edges.filter((e) => e.from === id).forEach((e) => purgeDfs(e.to));
-        };
-        purgeDfs(startId);
-        if (toPurge.size > 0) {
-          newNodes = newNodes.filter((n) => !toPurge.has(n.id));
-          newEdges = newEdges.filter((e) => !toPurge.has(e.from) && !toPurge.has(e.to));
-        }
+      const branchEdge = g.edges.find((e) => e.from === cursor && (e.label || "") === label);
+      let nodes = g.nodes.map((n) => (n.id === cursor ? { ...n, branches: (n.branches || []).filter((x) => x !== label) } : n));
+      let edges = g.edges.filter((e) => !(e.from === cursor && (e.label || "") === label));
+      let ng = { ...g, nodes, edges };
+      if (mode === "delete" && branchEdge) {
+        // keep only what's still reachable from the real entry points (roots computed BEFORE the cut,
+        // so the branch's now-orphaned head isn't mistaken for a root); merged steps survive.
+        const roots = g.nodes.filter((n) => n.type === "start" || !g.edges.some((e) => e.to === n.id)).map((n) => n.id);
+        const keep = new Set([cursor]); roots.forEach((r) => reachableFrom(ng, r).forEach((id) => keep.add(id)));
+        nodes = ng.nodes.filter((n) => keep.has(n.id));
+        const keepIds = new Set(nodes.map((n) => n.id));
+        ng = { ...ng, nodes, edges: ng.edges.filter((e) => keepIds.has(e.from) && keepIds.has(e.to)) };
       }
-      return { ...g, nodes: newNodes, edges: newEdges };
+      return ng;
     });
-    setBranchToRemove(null);
-    if (pendingBranch === branchLabel) setPendingBranch(null);
+    setBranchToRemove(null); setPendingBranch(null);
   };
-
-  const mapImported = (g) => {
-    const typeMap = { start: "start", end: "end", decision: "decision", manual: "manual", information: "information", process: "process", step: "process" };
-    const nodes = (g.nodes || []).map((n) => ({ id: String(n.id), label: n.label || "(unnamed)", type: typeMap[n.type] || "process" }));
-    const edges = (g.edges || []).map((e) => ({ from: String(e.from), to: String(e.to), label: e.label || "" }));
-    const ids = new Set(nodes.map((n) => n.id));
-    const clean = edges.filter((e) => ids.has(e.from) && ids.has(e.to));
-    nodes.forEach((n) => {
-      if (n.type === "decision") {
-        const labs = [...new Set(clean.filter((e) => e.from === n.id && e.label).map((e) => e.label))];
-        n.branches = labs.length ? labs : ["Yes", "No"];
+  const confirmConvert = (mode) => {
+    const type = convertTo;
+    setGraph((g) => {
+      const branchEdges = g.edges.filter((e) => e.from === cursor);
+      let edges;
+      if (mode === "clear") {
+        edges = g.edges.filter((e) => e.from !== cursor);
+      } else {
+        const keepEdge = branchEdges.find((e) => (e.label || "") === keepBranch) || branchEdges[0];
+        edges = g.edges.filter((e) => e.from !== cursor);
+        if (keepEdge) edges = [...edges, { from: cursor, to: keepEdge.to, label: "" }];
       }
+      let nodes = g.nodes.map((n) => { if (n.id !== cursor) return n; const { branches, _stashBranches, ...rest } = n; return { ...rest, type }; });
+      let ng = { ...g, nodes, edges };
+      if (mode === "collapse") {
+        const start = ng.nodes.find((n) => n.type === "start") || ng.nodes[0];
+        const reach = reachableFrom(ng, start ? start.id : null);
+        const kept = ng.nodes.filter((n) => reach.has(n.id));
+        const keepIds = new Set(kept.map((n) => n.id));
+        ng = { ...ng, nodes: kept, edges: ng.edges.filter((e) => keepIds.has(e.from) && keepIds.has(e.to)) };
+      }
+      return ng;
     });
-    let start = nodes.find((n) => n.type === "start") || nodes.find((n) => !clean.some((e) => e.to === n.id)) || nodes[0];
-    if (!start) { start = { id: "start", label: g.title || "Imported flow", type: "start" }; nodes.unshift(start); }
-    return { title: g.title || "Imported flow", nodes, edges: clean, startId: start.id };
+    setConvertTo(null); setPendingBranch(null);
   };
-
-  const onImportJson = async (file) => {
-    if (!file) return;
-    setImporting(true); setImportErr("");
-    try {
-      const text = await file.text();
-      let data; try { data = JSON.parse(text); } catch { throw new Error("Not valid JSON"); }
-      const m = adaptJson(data);
-      if (!m.nodes.length) throw new Error(`No flow steps found.`);
-      setGraph({ title: m.title, nodes: m.nodes, edges: m.edges });
-      setFlowName(m.title); setCursor(m.startId); setPendingBranch(null); setView("build");
-      const warn = [];
-      if (!m.edges.length) warn.push("no connections found");
-      if (m.unlabeled) warn.push(`${m.unlabeled} step(s) have no text`);
-      setImportErr(warn.length ? `Loaded ${m.nodes.length} steps — ${warn.join(", ")}.` : "");
-    } catch (e) { setImportErr(e.message || "Import failed"); }
-    finally { setImporting(false); if (jsonRef.current) jsonRef.current.value = ""; }
-  };
-
-  const onImportVsdx = async (file) => {
-    if (!file) return;
-    setImporting(true); setImportErr("");
-    try {
-      const b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1]); r.onerror = rej; r.readAsDataURL(file); });
-      const r = await fetch("/diagram/api/process/vsdx", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ vsdx: b64 }) });
-      if (!r.ok) throw new Error(`Import failed (${r.status})`);
-      const g = await r.json();
-      if (!g.nodes || !g.nodes.length) throw new Error("No shapes found in the .vsdx");
-      const m = mapImported(g);
-      setGraph({ title: m.title, nodes: m.nodes, edges: m.edges });
-      setFlowName(m.title); setCursor(m.startId); setPendingBranch(null); setView("build");
-    } catch (e) { setImportErr(e.message || "Import failed"); }
-    finally { setImporting(false); if (vsdxRef.current) vsdxRef.current.value = ""; }
-  };
-  const updateType = (id, type) => setGraph((g) => ({ ...g, nodes: g.nodes.map((n) => (n.id === id ? { ...n, type, ...(type === "decision" && !n.branches ? { branches: ["Yes", "No"] } : {}) } : n)) }));
   const addBranch = (decId, label) => { const b = label.trim(); if (!b) return; setGraph((g) => ({ ...g, nodes: g.nodes.map((n) => (n.id === decId && !(n.branches || []).includes(b) ? { ...n, branches: [...(n.branches || []), b] } : n)) })); };
   // rename a branch condition — keeps the decision's branch list and its edge labels in sync
   const renameBranch = (decId, oldLabel, newLabel) => {
@@ -931,9 +1199,20 @@ export default function GuidedBuilder({ onRegister }) {
     setCursor(id); setPendingBranch(null); setNewLabel("");
   };
   const insertBefore = () => { const e = graph.edges.find((x) => x.to === cursor); if (e) insertOnEdge(e.from, cursor, e.label); };
-  const insertAfter = () => { const kids = childEdges(graph, cursor); if (kids.length === 1) insertOnEdge(cursor, kids[0].to, kids[0].label); };
+  const insertAfter = () => {
+    const kids = childEdges(graph, cursor);
+    if (kids.length === 1) { insertOnEdge(cursor, kids[0].to, kids[0].label); return; }
+    if (kids.length === 0) {
+      // tip: append a new step after this one
+      const id = uid();
+      setGraph((g) => ({ ...g, nodes: [...g.nodes, { id, label: "New step", type: "process" }], edges: [...g.edges, { from: cursor, to: id, label: "" }] }));
+      setCursor(id); setPendingBranch(null); setNewLabel("");
+    }
+    // 2+ children (e.g. a decision): "after" is ambiguous — use a branch or the Full-flow connector inserts
+  };
   // pick an existing step instead of creating a duplicate — links the flow to it
   const useExisting = (existingId) => {
+    if (!existingId || existingId === cursor) return; // never link a step to itself
     setGraph((g) => (g.edges.some((e) => e.from === cursor && e.to === existingId) ? g : { ...g, edges: [...g.edges, { from: cursor, to: existingId, label: pendingBranch || "" }] }));
     setCursor(existingId); setPendingBranch(null); setNewLabel("");
   };
@@ -970,16 +1249,72 @@ export default function GuidedBuilder({ onRegister }) {
   const loadFlow = (f) => {
     setGraph(f.graph); setFlowName((f.graph && f.graph.title) || f.name);
     setCursor(f.graph && f.graph.nodes.some((n) => n.id === f.cursor) ? f.cursor : "start");
-    setCurrentId(f.id); setPendingBranch(null); setView("build");
+    setCurrentId(f.id); setPendingBranch(null); setView("build"); setFitKey((k) => k + 1);
   };
   const deleteFlow = (id, e) => { if (e) e.stopPropagation(); setSavedFlows((prev) => { const list = prev.filter((f) => f.id !== id); persistSaved(list); return list; }); if (currentId === id) setCurrentId(null); };
-  const newFlow = () => { setGraph({ title: "Untitled flow", nodes: [{ id: "start", label: "Untitled flow", type: "start" }], edges: [] }); setFlowName("Untitled flow"); setCursor("start"); setCurrentId(null); setPendingBranch(null); setView("build"); };
+  const newFlow = () => { setGraph({ title: "Untitled flow", nodes: [{ id: "start", label: "Untitled flow", type: "start" }], edges: [] }); setFlowName("Untitled flow"); setCursor("start"); setCurrentId(null); setPendingBranch(null); setView("build"); setFitKey((k) => k + 1); };
+
+  // ---- import a Visio (.vsdx): posts to the process backend, maps the returned graph into the builder ----
+  const [importing, setImporting] = useState(false);
+  const [importErr, setImportErr] = useState("");
+  const vsdxRef = useRef(null);
+  const jsonRef = useRef(null);
+  const onImportJson = async (file) => {
+    if (!file) return;
+    setImporting(true); setImportErr("");
+    try {
+      const text = await file.text();
+      let data; try { data = JSON.parse(text); } catch { throw new Error("Not valid JSON"); }
+      const m = adaptJson(data);
+      if (!m.nodes.length) throw new Error(`No flow steps found${Array.isArray(data) ? ` (${data.length} items, but none have text labels or explicit nodes/edges)` : ""}.`);
+      setGraph({ title: m.title, nodes: m.nodes, edges: m.edges });
+      setFlowName(m.title); setCursor(m.startId); setCurrentId(null); setPendingBranch(null); setView("build"); setFullFlow(true); setFitKey((k) => k + 1);
+      const warn = [];
+      if (!m.edges.length) warn.push("no connections found");
+      if (m.unlabeled) warn.push(`${m.unlabeled} step(s) have no text`);
+      setImportErr(warn.length ? `Loaded ${m.nodes.length} steps — ${warn.join(", ")}.` : "");
+    } catch (e) { setImportErr(e.message || "Import failed"); }
+    finally { setImporting(false); if (jsonRef.current) jsonRef.current.value = ""; }
+  };
+  const mapImported = (g) => {
+    // backend types: start/step/process/manual/decision/end/information -> builder vocabulary
+    const typeMap = { start: "start", end: "end", decision: "decision", manual: "manual", information: "information", process: "process", step: "process" };
+    const nodes = (g.nodes || []).map((n) => ({ id: String(n.id), label: n.label || "(unnamed)", type: typeMap[n.type] || "process" }));
+    const edges = (g.edges || []).map((e) => ({ from: String(e.from), to: String(e.to), label: e.label || "" }));
+    const ids = new Set(nodes.map((n) => n.id));
+    const clean = edges.filter((e) => ids.has(e.from) && ids.has(e.to));
+    // derive branches on decisions from their outgoing edge labels (or default Yes/No)
+    nodes.forEach((n) => {
+      if (n.type === "decision") {
+        const labs = [...new Set(clean.filter((e) => e.from === n.id && e.label).map((e) => e.label))];
+        n.branches = labs.length ? labs : ["Yes", "No"];
+      }
+    });
+    let start = nodes.find((n) => n.type === "start") || nodes.find((n) => !clean.some((e) => e.to === n.id)) || nodes[0];
+    if (!start) { start = { id: "start", label: g.title || "Imported flow", type: "start" }; nodes.unshift(start); }
+    return { title: g.title || "Imported flow", nodes, edges: clean, startId: start.id };
+  };
+  const onImportVsdx = async (file) => {
+    if (!file) return;
+    setImporting(true); setImportErr("");
+    try {
+      const b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1]); r.onerror = rej; r.readAsDataURL(file); });
+      const r = await fetch("/diagram/api/process/vsdx", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ vsdx: b64 }) });
+      if (!r.ok) throw new Error(`Import failed (${r.status})`);
+      const g = await r.json();
+      if (!g.nodes || !g.nodes.length) throw new Error("No shapes found in the .vsdx");
+      const m = mapImported(g);
+      setGraph({ title: m.title, nodes: m.nodes, edges: m.edges });
+      setFlowName(m.title); setCursor(m.startId); setCurrentId(null); setPendingBranch(null); setView("build"); setFullFlow(true); setFitKey((k) => k + 1);
+    } catch (e) { setImportErr(e.message || "Import failed"); }
+    finally { setImporting(false); if (vsdxRef.current) vsdxRef.current.value = ""; }
+  };
 
   const isDecisionCursor = cur && cur.type === "decision";
   const isEndCursor = cur && cur.type === "end";
 
   return (
-    <div style={{ ...sans, display: "flex", height: "100%", background: T.paper, color: T.ink }}>
+    <div style={{ ...sans, display: "flex", height: "100vh", background: T.paper, color: T.ink }}>
       {/* collapsible panel */}
       {collapsed ? (
         <div style={{ width: 44, background: T.rail, display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 14, borderRight: `1px solid ${T.railLine}` }}>
@@ -1020,7 +1355,7 @@ export default function GuidedBuilder({ onRegister }) {
               <Upload size={14} /> Import JSON
             </button>
             {importErr && <div style={{ ...sans, fontSize: 11.5, color: "#ffb4a8", marginTop: 6 }}>{importErr}</div>}
-            <div style={{ ...sans, fontSize: 11, color: T.invDim, marginTop: 6, lineHeight: 1.45 }}>Imports a .vsdx or JSON into an editable flow — decisions, branches and steps are mapped in.</div>
+            <div style={{ ...sans, fontSize: 11, color: T.invDim, marginTop: 6, lineHeight: 1.45 }}>Imports a .vsdx into an editable flow — decisions, branches and steps are mapped in.</div>
           </div>
 
           {savedFlows.length > 0 && (
@@ -1076,7 +1411,7 @@ export default function GuidedBuilder({ onRegister }) {
       <section style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         {/* view toggle */}
         <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderBottom: `1px solid ${T.line}`, background: T.panel }}>
-          {[["build", "Build", Hammer], ["mindmap", "Mind map", Network], ["paths", "Paths", Route], ["mermaid", "Mermaid", FileText], ["drawio", "Draw.io", ExternalLink]].map(([k, label, Icon]) => {
+          {[["build", "Build", Hammer], ["mindmap", "Mind map", Network], ["paths", "Paths", Route], ["drawio", "Draw.io", ExternalLink]].map(([k, label, Icon]) => {
             const on = view === k;
             return (
               <button key={k} onClick={() => changeView(k)}
@@ -1106,11 +1441,6 @@ export default function GuidedBuilder({ onRegister }) {
             <PathsPanel laid={laidForPaths} result={pathResult} busy={pathsBusy}
               selected={selPath} onSelect={setSelPath} query={pathQuery} onQuery={setPathQuery}
               edits={edits} setEdits={setEdits} hasEdits={Object.keys(edits).length > 0} onApply={applyEdits} onRenameBranch={renameBranch} onInsert={pathInsert} onAppend={pathAppend} onRemove={pathRemove} />
-          </div>
-        )}
-        {view === "mermaid" && (
-          <div style={{ flex: 1, position: "relative" }}>
-            <MermaidView chart={toMermaid(graph)} />
           </div>
         )}
         {view === "drawio" && (
@@ -1145,9 +1475,9 @@ export default function GuidedBuilder({ onRegister }) {
         </div>
 
         {/* flow: focused path, or the whole flow when 'Full flow' is on */}
-        <div style={{ flex: 1, overflow: "auto", padding: fullFlow ? 20 : "28px 0 60px", background: "#FCFBF8" }}>
+        <div style={{ flex: 1, position: "relative", overflow: fullFlow ? "hidden" : "auto", padding: fullFlow ? 0 : "28px 0 60px", background: "#FCFBF8" }}>
           {fullFlow ? (
-            <FullFlowSvg graph={graph} cursor={cursor} onSelect={(id) => { setCursor(id); setPendingBranch(null); }} onEdgeInsert={insertOnEdge} />
+            <FullFlowSvg graph={graph} cursor={cursor} onSelect={(id) => { setCursor(id); setPendingBranch(null); }} onEdgeInsert={insertOnEdge} fitKey={fitKey} revealKey={revealKey} />
           ) : (
           <div style={{ maxWidth: 460, margin: "0 auto", display: "flex", flexDirection: "column", alignItems: "center" }}>
             {chain.map((id, i) => {
@@ -1168,7 +1498,7 @@ export default function GuidedBuilder({ onRegister }) {
                       background: meta.bg, color: meta.fg, border: `${isCur ? 2.5 : 1.5}px solid ${isCur ? T.amber : meta.bd}`,
                       borderRadius: n.type === "start" || n.type === "end" ? 22 : 10, padding: "12px 16px", textAlign: "center",
                       boxShadow: isCur ? "0 2px 10px rgba(217,119,6,.18)" : "none", transform: n.type === "decision" ? "none" : "none" }}>
-                    <div style={{ ...mono, fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.06em", color: meta.bd, marginBottom: 3 }}>{meta.name}{n.seq != null ? ` · ${n.seq}` : ""}</div>
+                    <div style={{ ...mono, fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.06em", color: meta.bd, marginBottom: 3 }}>{meta.name}{n.seq != null ? ` · ${n.seq}` : ""}{sharedIds.has(id) ? " · shared" : ""}</div>
                     <div style={{ fontSize: 14, fontWeight: 500, lineHeight: 1.4 }}>{n.label}</div>
                   </div>
                 </React.Fragment>
@@ -1216,7 +1546,7 @@ export default function GuidedBuilder({ onRegister }) {
                     {parent[cursor] && (
                       <button onClick={insertBefore} title="Insert a new step before this one" style={{ ...sans, display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, color: T.inkSoft, background: T.panel, border: `1px dashed ${T.line}`, borderRadius: 8, padding: "5px 10px", cursor: "pointer" }}><Plus size={13} /> insert before</button>
                     )}
-                    {childEdges(graph, cursor).length === 1 && (
+                    {node.type !== "decision" && childEdges(graph, cursor).length <= 1 && (
                       <button onClick={insertAfter} title="Insert a new step after this one" style={{ ...sans, display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, color: T.inkSoft, background: T.panel, border: `1px dashed ${T.line}`, borderRadius: 8, padding: "5px 10px", cursor: "pointer" }}><Plus size={13} /> insert after</button>
                     )}
                   </div>
@@ -1228,11 +1558,51 @@ export default function GuidedBuilder({ onRegister }) {
                 ) : (
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
                     {ADD_TYPES.map((t) => (
-                      <button key={t} onClick={() => updateType(cursor, t)}
+                      <button key={t} onClick={() => requestType(cursor, t)}
                         style={{ ...sans, fontSize: 11.5, fontWeight: 600, cursor: "pointer", color: node.type === t ? NT[t].fg : T.textDim, background: node.type === t ? NT[t].bg : "transparent", border: `1px solid ${node.type === t ? NT[t].bd : T.line}`, borderRadius: 7, padding: "5px 10px" }}>{NT[t].name}</button>
                     ))}
                   </div>
                 )}
+
+                {/* decision -> single-path resolver */}
+                {convertTo && node.type === "decision" && (() => {
+                  const branchEdges = childEdges(graph, cursor);
+                  const join = reconvergePoint(graph, cursor);
+                  return (
+                    <div style={{ marginBottom: 16, background: "#FFF6E6", border: "1px solid #E7C878", borderRadius: 10, padding: 12 }}>
+                      <div style={{ ...sans, fontSize: 13, fontWeight: 700, color: "#8a5a00", marginBottom: 4 }}>Convert to {NT[convertTo].name}?</div>
+                      <div style={{ ...sans, fontSize: 12, color: "#7a5a20", lineHeight: 1.5, marginBottom: 10 }}>
+                        This is a decision with {branchEdges.length} branch{branchEdges.length === 1 ? "" : "es"}. A {NT[convertTo].name} step has a single path forward — choose what to keep.
+                      </div>
+                      {join && byId[join] && (
+                        <div style={{ ...sans, fontSize: 12, color: "#0a4a63", background: "#e7f3fb", border: "1px solid #bfe0ee", borderRadius: 7, padding: "7px 9px", marginBottom: 10 }}>
+                          ↔ Branches rejoin at “{trunc(byId[join].label, 28)}” — you can collapse them to one path.
+                        </div>
+                      )}
+                      <div style={{ ...mono, fontSize: 10, color: "#8a5a00", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>Keep which path</div>
+                      {branchEdges.map((e) => {
+                        const on = (e.label || "") === keepBranch;
+                        return (
+                          <button key={e.to} onClick={() => setKeepBranch(e.label || "")}
+                            style={{ ...sans, display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left", cursor: "pointer", background: on ? "#fff" : "transparent", border: `1.5px solid ${on ? T.amber : T.line}`, borderRadius: 7, padding: "6px 9px", marginBottom: 5, fontSize: 12, color: T.ink }}>
+                            <span style={{ width: 12, height: 12, borderRadius: "50%", border: `2px solid ${on ? T.amber : "#bbb"}`, background: on ? T.amber : "#fff", flexShrink: 0 }} />
+                            <span style={{ fontWeight: 600, color: "#0a4a63" }}>{e.label || "(no label)"}</span>
+                            <span style={{ color: T.textDim }}>→ {byId[e.to] ? trunc(byId[e.to].label, 20) : e.to}</span>
+                          </button>
+                        );
+                      })}
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+                        {join && (
+                          <button onClick={() => confirmConvert("collapse")} style={{ ...sans, fontSize: 12, fontWeight: 600, color: "#fff", background: "#0e86b8", border: "none", borderRadius: 7, padding: "7px 11px", cursor: "pointer" }}>Collapse to single path</button>
+                        )}
+                        <button onClick={() => confirmConvert("keep")} style={{ ...sans, fontSize: 12, fontWeight: 600, color: "#1a1206", background: T.amber, border: "none", borderRadius: 7, padding: "7px 11px", cursor: "pointer" }}>Keep selected, detach rest</button>
+                        <button onClick={() => confirmConvert("clear")} style={{ ...sans, fontSize: 12, color: "#b85450", background: "#fff", border: "1px solid #e3b3b0", borderRadius: 7, padding: "7px 11px", cursor: "pointer" }}>Clear all branches</button>
+                        <button onClick={cancelConvert} style={{ ...sans, fontSize: 12, color: T.inkSoft, background: "#fff", border: `1px solid ${T.line}`, borderRadius: 7, padding: "7px 11px", cursor: "pointer" }}>Cancel</button>
+                      </div>
+                      <div style={{ ...mono, fontSize: 9.5, color: "#8a5a00", marginTop: 8 }}>detach keeps the sub-flow (orphaned) · collapse removes the redundant parallel steps</div>
+                    </div>
+                  );
+                })()}
 
                 {/* content + duplicate detection */}
                 <div style={{ ...mono, fontSize: 10.5, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 7 }}>Content</div>
@@ -1241,57 +1611,61 @@ export default function GuidedBuilder({ onRegister }) {
                   style={{ ...sans, width: "100%", boxSizing: "border-box", resize: "vertical", fontSize: 13.5, lineHeight: 1.5, color: T.ink, background: "#fff", border: `1px solid ${T.line}`, borderRadius: 8, padding: "8px 10px", outline: "none" }} />
                 {selDups.length > 0 && (
                   <div style={{ marginTop: 8, background: "#FFF6E6", border: "1px solid #E7C878", borderRadius: 8, padding: "8px 10px" }}>
-                    <div style={{ ...sans, fontSize: 11.5, fontWeight: 600, color: "#8a5a00", marginBottom: 5 }}>⚠ Possible duplicate content</div>
+                    <div style={{ ...sans, fontSize: 11.5, fontWeight: 600, color: "#8a5a00", marginBottom: 5 }}>⚠ Similar step{selDups.length > 1 ? "s" : ""} elsewhere — click to jump there</div>
                     {selDups.map((s) => (
-                      <button key={s.n.id} onClick={() => { setCursor(s.n.id); setPendingBranch(null); }}
-                        style={{ ...sans, display: "block", width: "100%", textAlign: "left", cursor: "pointer", background: "#fff", border: `1px solid ${T.line}`, borderRadius: 6, padding: "5px 8px", marginBottom: 4, fontSize: 11.5, color: T.ink }}>
-                        <span style={{ ...mono, fontSize: 9.5, color: "#8a5a00", marginRight: 6 }}>{Math.round(s.score * 100)}%</span>{trunc(s.n.label, 46)}
+                      <button key={s.n.id} onClick={() => revealNode(s.n.id)} title="Go to this step in the flow"
+                        style={{ ...sans, display: "flex", alignItems: "center", gap: 7, width: "100%", textAlign: "left", cursor: "pointer", background: "#fff", border: `1px solid ${T.line}`, borderRadius: 6, padding: "5px 8px", marginBottom: 4, fontSize: 11.5, color: T.ink }}>
+                        <span style={{ ...mono, fontSize: 9.5, color: "#8a5a00", flexShrink: 0 }}>{s.exact ? "SAME" : Math.round(s.score * 100) + "%"}</span>
+                        <span style={{ flex: 1, minWidth: 0 }}>{trunc(s.n.label, 40)}</span>
+                        <Route size={12} style={{ opacity: 0.55, flexShrink: 0 }} />
                       </button>
                     ))}
+                    <div style={{ ...mono, fontSize: 9.5, color: "#8a5a00", marginTop: 2 }}>jumps to that step (centres it in Full-flow view)</div>
                   </div>
                 )}
 
                 {/* decision branches */}
                 {node.type === "decision" && (
                   <div style={{ marginTop: 16 }}>
-                    <div style={{ ...mono, fontSize: 10.5, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 7 }}>Branches — edit condition, build, or remove</div>
+                    <div style={{ ...mono, fontSize: 10.5, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 7 }}>Branches — edit the condition, click to view or build</div>
                     {(node.branches || []).map((b) => {
                       const child = branchChild(cursor, b); const active = pendingBranch === b;
-                      const hasBranch = (node.branches || []).length > 1;
+                      const confirming = branchToRemove === b;
                       return (
                         <div key={b} style={{ marginBottom: 6 }}>
                           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                             <input defaultValue={b} spellCheck={false} title="Edit branch condition"
                               onBlur={(e) => renameBranch(cursor, b, e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
-                              style={{ ...sans, flex: "0 0 96px", boxSizing: "border-box", fontSize: 12, fontWeight: 600, color: "#0a4a63", background: "#fff", border: `1px solid ${T.line}`, borderRadius: 7, padding: "7px 8px", outline: "none" }} />
+                              style={{ ...sans, flex: "0 0 88px", boxSizing: "border-box", fontSize: 12, fontWeight: 600, color: "#0a4a63", background: "#fff", border: `1px solid ${T.line}`, borderRadius: 7, padding: "7px 8px", outline: "none" }} />
                             <button onClick={() => goBranch(b)}
                               style={{ ...sans, display: "flex", alignItems: "center", gap: 6, flex: 1, textAlign: "left", cursor: "pointer", fontSize: 12, fontWeight: 600,
                                 color: child ? "#0a4a63" : active ? "#1a1206" : T.inkSoft, background: child ? "#d6ecf7" : active ? T.amberSoft : "#fff",
                                 border: `1.5px solid ${child ? "#0e86b8" : active ? T.amber : T.line}`, borderRadius: 8, padding: "7px 9px" }}>
                               {child ? <CornerDownRight size={13} /> : <Plus size={13} />}
-                              <span style={{ ...sans, fontWeight: 400, fontSize: 11.5 }}>{child ? trunc(byId[child].label, 18) : active ? "building…" : "empty — build"}</span>
+                              <span style={{ ...sans, fontWeight: 400, fontSize: 11.5 }}>{child ? trunc(byId[child].label, 16) : active ? "building…" : "empty — build"}</span>
                             </button>
-                            {hasBranch && (
-                              <button onClick={() => setBranchToRemove((cur) => (cur === b ? null : b))} title="Remove this branch option"
-                                style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 28, height: 28, background: "transparent", border: `1px solid ${T.line}`, borderRadius: 7, color: "#b85450", cursor: "pointer" }}>
-                                <Trash2 size={13} />
-                              </button>
-                            )}
+                            <button onClick={() => setBranchToRemove(confirming ? null : b)} title="Remove this branch"
+                              style={{ flexShrink: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", width: 30, height: 30, color: "#b85450", background: confirming ? "#f8d7d5" : "transparent", border: "1px solid #e3b3b0", borderRadius: 7, cursor: "pointer" }}>
+                              <Trash2 size={12} />
+                            </button>
                           </div>
-                          {branchToRemove === b && (
-                            <div style={{ marginTop: 6, background: "#FFF6E6", border: "1px solid #E7C878", borderRadius: 8, padding: "9px 11px" }}>
-                              <div style={{ ...sans, fontSize: 12, fontWeight: 600, color: "#8a5a00", marginBottom: 6 }}>Remove “{b}” branch?</div>
-                              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          {confirming && (
+                            <div style={{ marginTop: 6, background: "#FFF6E6", border: "1px solid #E7C878", borderRadius: 8, padding: "8px 10px" }}>
+                              <div style={{ ...sans, fontSize: 12, color: "#7a5a20", lineHeight: 1.5, marginBottom: 8 }}>
+                                Remove the “{b}” branch{child ? ` — should the steps after “${trunc(byId[child].label, 22)}” remain, or be deleted?` : "?"}
+                              </div>
+                              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                                 {child ? (
                                   <>
-                                    <button onClick={() => removeBranchResolved(b, "keep")} style={{ ...sans, fontSize: 11.5, fontWeight: 600, color: "#1a1206", background: T.amber, border: "none", borderRadius: 6, padding: "6px 9px", cursor: "pointer" }}>Remove branch (keep steps)</button>
-                                    <button onClick={() => removeBranchResolved(b, "delete")} style={{ ...sans, fontSize: 11.5, color: "#b85450", background: "#fff", border: "1px solid #b85450", borderRadius: 6, padding: "6px 9px", cursor: "pointer" }}>Delete branch & unlinked steps</button>
+                                    <button onClick={() => removeBranchResolved(b, "keep")} style={{ ...sans, fontSize: 12, fontWeight: 600, color: "#1a1206", background: T.amber, border: "none", borderRadius: 7, padding: "7px 11px", cursor: "pointer" }}>Keep the following steps</button>
+                                    <button onClick={() => removeBranchResolved(b, "delete")} style={{ ...sans, fontSize: 12, fontWeight: 600, color: "#fff", background: "#b85450", border: "none", borderRadius: 7, padding: "7px 11px", cursor: "pointer" }}>Delete the following steps</button>
                                   </>
                                 ) : (
                                   <button onClick={() => removeBranchResolved(b, "keep")} style={{ ...sans, fontSize: 12, fontWeight: 600, color: "#1a1206", background: T.amber, border: "none", borderRadius: 7, padding: "7px 11px", cursor: "pointer" }}>Remove branch</button>
                                 )}
                                 <button onClick={() => setBranchToRemove(null)} style={{ ...sans, fontSize: 12, color: T.inkSoft, background: "#fff", border: `1px solid ${T.line}`, borderRadius: 7, padding: "7px 11px", cursor: "pointer" }}>Cancel</button>
                               </div>
+                              <div style={{ ...mono, fontSize: 9.5, color: "#8a5a00", marginTop: 6 }}>delete removes only steps not reachable another way</div>
                             </div>
                           )}
                         </div>
